@@ -806,7 +806,7 @@ const DOPO = "__dopo";
 const PERMANENTE = [
   {id: "Permanente/A_Incarico-e-accettazione", nome: "Fascicolo permanente: incarico e accettazione", breve: "Incarico e accettazione",
    cosa: "Nomina, lettera d'incarico, accettazione, dichiarazioni di indipendenza e documenti del revisore. Solo archivio: la catena non li legge e non partono verso nessun fornitore.",
-   indizi: /identit|passaporto|patente|codice.?fiscale|curriculum|nomina|accettazion|indipendenz|incompatibil|ineleggibil|polizza|lettera.?d.?incarico|mandato/i},
+   indizi: /identit|\bcie\b|\bc\.?f\.?\b|tessera.?sanitaria|atto.?notorio|dichiarazione.?sostitutiva|passaporto|patente|codice.?fiscale|curriculum|nomina|accettazion|indipendenz|incompatibil|ineleggibil|polizza|lettera.?d.?incarico|mandato/i},
   {id: "Permanente/B_Conoscenza-del-cliente", nome: "Fascicolo permanente: conoscenza del cliente", breve: "Conoscenza del cliente",
    cosa: "Statuto, regolamenti, organigramma, visure, contratti e atti pluriennali. La catena li riceve come contesto a ogni lavoro.",
    indizi: /statuto|atto.?costitutivo|regolament|visura|organigramma|mutuo|leasing|convenzion|contratto/i}];
@@ -911,47 +911,97 @@ const STRUMENTO_SMISTA = {name: "smista", description: "Assegna ogni documento r
       descrizione: {type: "string", description: "Una frase su che cosa viene chiesto e da chi."}}}}}}}}};
 const ISTRUZIONI_SMISTA = `Sei l'assistente di un revisore legale italiano. Ricevi i documenti arrivati per un suo incarico, l'elenco delle attività aperte e le sezioni del fascicolo permanente. Per ogni documento indica con lo strumento smista la destinazione, in base al contenuto, al periodo a cui si riferisce e ai documenti richiesti per ciascuna attività.
 
-Regole: usa solo le cartelle degli elenchi, copiate esattamente. Vanno nel fascicolo permanente i documenti che valgono per tutto il mandato e non per una scadenza: nella sezione «incarico e accettazione» nomina, lettera d'incarico, accettazione, dichiarazioni di indipendenza o di assenza di cause di incompatibilità, polizza, curriculum e documenti d'identità o personali del revisore; nella sezione «conoscenza del cliente» statuto, atto costitutivo, regolamenti, organigramma, visure, contratti e atti pluriennali. Gli altri documenti vanno all'attività che li richiede; se servono a più attività scegli quella che scade prima. Quando i documenti riguardano una richiesta o un atto specifico che non corrisponde a nessuna attività aperta (per esempio una variazione di bilancio su cui l'ente chiede il parere, mentre tra le attività c'è solo il bilancio di previsione), non forzarli in un'attività simile: proponi una nuova attività. Lascia vuota la cartella e compila nuova_attivita con un titolo preciso che contenga la data dell'atto in formato gg.mm.aaaa, il tipo scelto da attivita_su_richiesta, la scadenza solo se risulta dai documenti e una descrizione di una frase. I documenti dello stesso atto devono avere la stessa nuova attività, con lo stesso identico titolo; atti diversi hanno attività diverse. Se non è chiaro, o il documento non riguarda nessuna destinazione, lascia la cartella vuota senza nuova_attivita: finirà tra i documenti da smistare e deciderà il revisore. Non inventare: se di un documento conosci solo il nome, dillo nel motivo e non indicare certezza alta. Nel motivo chiama le destinazioni con il loro titolo, mai con la cartella o con codici. Assegna tutti i documenti, una sola volta ciascuno.`;
-async function bloccoDocumento(f, conto){
-  if (f.soloNome) return [{type: "text", text: "(Di questo documento conosci solo il nome.)"}];
-  const nome = f.name.toLowerCase(), entra = limite => f.size <= limite && conto.usati + f.size <= 16 * 1048576 && (conto.usati += f.size, true);
-  if (nome.endsWith(".pdf") && entra(4.5 * 1048576)) return [{type: "document", source: {type: "base64", media_type: "application/pdf", data: await base64(f)}, title: f.name}];
-  if (/\.(png|jpe?g|gif|webp)$/.test(nome) && entra(3 * 1048576)) return [{type: "image", source: {type: "base64", media_type: f.type || "image/jpeg", data: await base64(f)}}];
-  if (/\.(txt|md|csv|json|xml|eml|html?)$/.test(nome)) return [{type: "text", text: (await f.text()).slice(0, 6000)}];
-  return [{type: "text", text: "(Di questo documento conosci solo il nome.)"}];
+Regole: usa solo le cartelle degli elenchi, copiate esattamente. Vanno nel fascicolo permanente i documenti che valgono per tutto il mandato e non per una scadenza: nella sezione «incarico e accettazione» nomina, lettera d'incarico, accettazione, dichiarazioni di indipendenza o di assenza di cause di incompatibilità, polizza, curriculum e documenti d'identità o personali del revisore; nella sezione «conoscenza del cliente» statuto, atto costitutivo, regolamenti, organigramma, visure, contratti e atti pluriennali. Gli altri documenti vanno all'attività che li richiede; se servono a più attività scegli quella che scade prima. Quando i documenti riguardano una richiesta o un atto specifico che non corrisponde a nessuna attività aperta (per esempio una variazione di bilancio su cui l'ente chiede il parere, mentre tra le attività c'è solo il bilancio di previsione), non forzarli in un'attività simile: proponi una nuova attività. Lascia vuota la cartella e compila nuova_attivita con un titolo preciso che contenga la data dell'atto in formato gg.mm.aaaa, il tipo scelto da attivita_su_richiesta, la scadenza solo se risulta dai documenti e una descrizione di una frase. I documenti dello stesso atto devono avere la stessa nuova attività, con lo stesso identico titolo; atti diversi hanno attività diverse. Se non è chiaro, o il documento non riguarda nessuna destinazione, lascia la cartella vuota senza nuova_attivita: finirà tra i documenti da smistare e deciderà il revisore. Non inventare: se di un documento conosci solo il nome, dillo nel motivo e non indicare certezza alta. Nel motivo chiama le destinazioni con il loro titolo, mai con la cartella o con codici. Se nuove_attivita_gia_proposte non è vuoto e un documento riguarda uno di quegli atti, usa nuova_attivita con lo stesso identico titolo. I file firmati digitalmente (.p7m) si valutano come gli altri. Assegna tutti i documenti, una sola volta ciascuno.`;
+const SOLO_NOME = [{type: "text", text: "(Di questo documento conosci solo il nome.)"}];
+/* I file firmati .p7m contengono il PDF originale: lo si estrae quando la busta ha codifica a lunghezza definita. */
+async function pdfDaP7m(f){
+  let b = new Uint8Array(await f.arrayBuffer());
+  if (b[0] === 0x4d && b[1] === 0x49 || b[0] === 0x2d) try { b = Uint8Array.from(atob(new TextDecoder().decode(b).replace(/-----[^-]+-----/g, "").replace(/\s+/g, "")), c => c.charCodeAt(0)); } catch (e) { return null; }
+  if (b[0] !== 0x30 || b[1] === 0x80) return null;
+  const cerca = (ago, indietro) => { const k = [...ago].map(c => c.charCodeAt(0));
+    for (let i = indietro ? b.length - k.length : 0; indietro ? i >= 0 : i <= b.length - k.length; i += indietro ? -1 : 1) if (k.every((v, j) => b[i + j] === v)) return i; return -1; };
+  const da = cerca("%PDF-", false), a = cerca("%%EOF", true);
+  return da >= 0 && a > da ? new File([b.slice(da, a + 5)], f.name.replace(/\.p7m$/i, ""), {type: "application/pdf"}) : null;
 }
-async function classifica(cod, files, aperte, soloNomi = false){
-  const inc = incarico(cod), conto = {usati: 0};
+async function paginePdf(f){
+  const testo = new TextDecoder("latin1").decode(await f.arrayBuffer()), n = (testo.match(/\/Type\s*\/Page(?![s])/g) || []).length;
+  return n || Math.max(1, Math.ceil(f.size / 60000));
+}
+/* Prepara un documento per il modello: {blocchi, pagine, peso, nota}. Oltre i limiti resta solo il nome. */
+async function preparaDocumento(f){
+  const soloNome = nota => ({blocchi: SOLO_NOME, pagine: 0, peso: 0, nota});
+  if (!f || f.soloNome) return soloNome("Documento troppo pesante: letto solo il nome.");
+  let file = f, nome = f.name.toLowerCase();
+  if (nome.endsWith(".p7m")){ const dentro = f.size <= 6 * 1048576 ? await pdfDaP7m(f).catch(() => null) : null; if (!dentro) return soloNome("File firmato non apribile qui: letto solo il nome."); file = dentro; nome = dentro.name.toLowerCase(); }
+  if (nome.endsWith(".pdf")){ if (file.size > 4.5 * 1048576) return soloNome("Documento troppo pesante: letto solo il nome.");
+    const pagine = await paginePdf(file); if (pagine > 40) return soloNome(`Documento di ${pagine} pagine: letto solo il nome.`);
+    return {blocchi: [{type: "document", source: {type: "base64", media_type: "application/pdf", data: await base64(file)}, title: f.name}], pagine, peso: file.size, nota: ""}; }
+  if (/\.(png|jpe?g|gif|webp)$/.test(nome) && file.size <= 3 * 1048576) return {blocchi: [{type: "image", source: {type: "base64", media_type: file.type || "image/jpeg", data: await base64(file)}}], pagine: 1, peso: file.size, nota: ""};
+  if (/\.(txt|md|csv|json|xml|eml|html?)$/.test(nome)) return {blocchi: [{type: "text", text: (await file.text()).slice(0, 6000)}], pagine: 1, peso: 0, nota: ""};
+  return soloNome("Formato non leggibile qui: letto solo il nome.");
+}
+/* Gruppi di documenti per richiesta: pochi alla volta, per restare nei limiti di pagine, peso e traffico del modello. */
+function gruppiDi(pronti){
+  const gruppi = []; let g = null;
+  pronti.forEach((d, n) => { if (!g || g.pagine + d.pagine > 45 || g.peso + d.peso > 6 * 1048576 || g.indici.length >= 8){ g = {indici: [], pagine: 0, peso: 0}; gruppi.push(g); }
+    g.indici.push(n); g.pagine += d.pagine; g.peso += d.peso; });
+  return gruppi;
+}
+const pausa = ms => new Promise(r => setTimeout(r, ms));
+async function classifica(cod, files, aperte, avanzamento = () => {}){
+  const inc = incarico(cod), nuove = [], esiti = new Array(files.length).fill(null); let ultimoErrore = "";
   const elenco = await Promise.all(aperte.map(async s => { let richiesti = "";
     if (s.richiesta) try { richiesti = (await archivio.leggi(s.cartella, "00_richiesta.md")).slice(0, 2500); } catch (e) {}
     return {cartella: s.cartella, attivita: s.attivita, scadenza: s.data, stato: s.stato, richiesta_inviata: s.richiesta?.inviata || null, documenti_gia_ricevuti: s.ndoc || 0, richiesta_documenti: richiesti}; }));
-  const contenuto = [{type: "text", text: "Incarico e attività aperte:\n" + JSON.stringify({oggi: iso(oggi()), incarico: inc.denominazione, tipologia: TIPI[inc.tipo]?.nome || inc.tipo, attivita_aperte: elenco,
-    attivita_su_richiesta: (SU_RICHIESTA[inc.tipo] || []).map(x => ({tipo: x.chiave, nome: x.nome})),
-    fascicolo_permanente: PERMANENTE.map(x => ({cartella: percorsoPermanente(cod, x), sezione: x.nome, contenuto: x.cosa}))})}];
-  for (const [n, f] of files.entries()){
-    contenuto.push({type: "text", text: `[Documento ${n + 1}: ${f ? f.name : "non leggibile"}]`});
-    contenuto.push(...(f && !soloNomi ? await bloccoDocumento(f, conto) : [{type: "text", text: "(Di questo documento conosci solo il nome.)"}]));
-  }
-  const r = await fetch("https://api.anthropic.com/v1/messages", {method: "POST",
-    headers: {"content-type": "application/json", "x-api-key": stato.assistente.chiave, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true"},
-    body: JSON.stringify({model: stato.assistente.modello || CONFIG.modelloAssistente || "claude-sonnet-5-5", max_tokens: 2000, system: ISTRUZIONI_SMISTA, tools: [STRUMENTO_SMISTA], tool_choice: {type: "tool", name: "smista"}, messages: [{role: "user", content: contenuto}]})});
-  if (!r.ok){ if (!soloNomi && [400, 413].includes(r.status)) return classifica(cod, files, aperte, true); throw new Error("Il modello ha risposto " + r.status); }
-  const uso = ((await r.json()).content || []).find(b => b.type === "tool_use" && b.name === "smista"), voci = uso?.input?.assegnazioni; if (!Array.isArray(voci)) throw new Error("Risposta senza assegnazioni");
-  const ammesse = [...aperte.map(s => s.cartella), ...PERMANENTE.map(x => percorsoPermanente(cod, x))], nuove = [];
-  const tra7 = (() => { const d = oggi(); d.setDate(d.getDate() + 7); return iso(d); })();
-  const proposte = files.map((f, n) => { const v = voci.find(x => Number(x.documento) === n + 1), valida = v && ammesse.includes(v.cartella);
-    if (!v) return {dest: "", motivo: "L'assistente non si è espresso su questo documento."};
-    const titolo = valida ? nomeDestinazione(v.cartella) : "", testo = senzaCodici(String(v.motivo || "").trim()), coda = soloNomi ? " Letto solo il nome del file." : "";
-    if (valida && v.certezza !== "bassa") return {dest: v.cartella, motivo: testo + (v.certezza === "media" ? " Certezza media: controlla." : "") + coda};
-    const na = !valida && v.nuova_attivita, nuovoTitolo = na && String(na.titolo || "").trim();
-    if (nuovoTitolo && v.certezza !== "bassa"){
-      let k = nuove.findIndex(x => x.titolo.toLowerCase() === nuovoTitolo.toLowerCase());
-      if (k < 0) k = nuove.push({titolo: nuovoTitolo, guida: suRichiesta(cod, na.tipo)?.chiave || "", descrizione: String(na.descrizione || "").trim(),
-        data: /^\d{4}-\d{2}-\d{2}$/.test(na.scadenza || "") && na.scadenza >= iso(oggi()) ? na.scadenza : tra7, dataDaiDocumenti: /^\d{4}-\d{2}-\d{2}$/.test(na.scadenza || "") && na.scadenza >= iso(oggi())}) - 1;
-      return {dest: "nuova:" + k, motivo: testo + (v.certezza === "media" ? " Certezza media: controlla." : "") + coda};
+  const ammesse = [...aperte.map(s => s.cartella), ...PERMANENTE.map(x => percorsoPermanente(cod, x))];
+  const tra7 = (() => { const d = oggi(); d.setDate(d.getDate() + 7); return iso(d); })(), dataOk = d => /^\d{4}-\d{2}-\d{2}$/.test(d || "") && d >= iso(oggi());
+  const pronti = []; for (const f of files) pronti.push(await preparaDocumento(f).catch(() => ({blocchi: SOLO_NOME, pagine: 0, peso: 0, nota: "Documento non leggibile: letto solo il nome."})));
+  const chiedi = async (indici, soloNomi) => {
+    const contenuto = [{type: "text", text: "Incarico e destinazioni:\n" + JSON.stringify({oggi: iso(oggi()), incarico: inc.denominazione, tipologia: TIPI[inc.tipo]?.nome || inc.tipo, attivita_aperte: elenco,
+      attivita_su_richiesta: (SU_RICHIESTA[inc.tipo] || []).map(x => ({tipo: x.chiave, nome: x.nome})),
+      fascicolo_permanente: PERMANENTE.map(x => ({cartella: percorsoPermanente(cod, x), sezione: x.nome, contenuto: x.cosa})),
+      nuove_attivita_gia_proposte: nuove.map(x => ({titolo: x.titolo, tipo: x.guida, descrizione: x.descrizione}))})}];
+    indici.forEach((n, k) => { contenuto.push({type: "text", text: `[Documento ${k + 1}: ${files[n] ? files[n].name : "non leggibile"}]`}); contenuto.push(...(soloNomi ? SOLO_NOME : pronti[n].blocchi)); });
+    let r; try { r = await fetch("https://api.anthropic.com/v1/messages", {method: "POST",
+        headers: {"content-type": "application/json", "x-api-key": stato.assistente.chiave, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true"},
+        body: JSON.stringify({model: stato.assistente.modello || CONFIG.modelloAssistente || "claude-sonnet-5-5", max_tokens: 2500, system: ISTRUZIONI_SMISTA, tools: [STRUMENTO_SMISTA], tool_choice: {type: "tool", name: "smista"}, messages: [{role: "user", content: contenuto}]})}); }
+      catch (e) { throw Object.assign(new Error("connessione non riuscita (" + (e.message || e) + ")"), {stato: 0}); }
+    if (!r.ok){ const corpo = await r.json().catch(() => ({}));
+      throw Object.assign(new Error(`errore ${r.status}` + (corpo.error?.message ? ": " + String(corpo.error.message).slice(0, 220) : "")), {stato: r.status, attesa: Number(r.headers.get("retry-after")) || 0}); }
+    const voci = ((await r.json()).content || []).find(x => x.type === "tool_use" && x.name === "smista")?.input?.assegnazioni;
+    if (!Array.isArray(voci)) throw Object.assign(new Error("risposta senza assegnazioni"), {stato: -1});
+    return voci;
+  };
+  const coda = gruppiDi(pronti).map(g => g.indici); let letti = 0;
+  while (coda.length){
+    const gruppo = {indici: coda.shift()};
+    avanzamento(`L'assistente sta leggendo i documenti: ${letti} di ${files.length} fatti.`);
+    let voci = null, soloNomi = false, diviso = false;
+    for (let prova = 0; prova < 3 && !voci; prova++){
+      try { voci = await chiedi(gruppo.indici, soloNomi); }
+      catch (e) { ultimoErrore = e.message;
+        if ([400, 413].includes(e.stato) && gruppo.indici.length > 1){ coda.unshift(...gruppo.indici.map(n => [n])); diviso = true; break; }   // un documento non accettato: li provo uno alla volta
+        if ([400, 413].includes(e.stato) && !soloNomi){ soloNomi = true; continue; }          // contenuto non accettato: riprovo con il solo nome
+        if ([0, 429, 500, 502, 503, 529].includes(e.stato) && prova < 2){ const s = Math.min(60, e.attesa || 20);
+          avanzamento(`L'assistente è occupato (${e.message.slice(0, 60)}): riprovo tra ${s} secondi.`); await pausa(s * 1000); continue; }
+        break; }
     }
-    return {dest: "", motivo: testo + (valida ? ` Ipotesi poco sicura: «${titolo}».` : nuovoTitolo ? ` Ipotesi poco sicura: nuova attività «${nuovoTitolo}».` : "")}; });
-  return {proposte, nuove};
+    if (diviso) continue;
+    letti += gruppo.indici.length;
+    gruppo.indici.forEach((n, k) => { const v = voci && voci.find(x => Number(x.documento) === k + 1), nota = soloNomi ? " Letto solo il nome del file." : pronti[n].nota ? " " + pronti[n].nota : "";
+      if (!voci) return void (esiti[n] = {dest: "", motivo: `L'assistente non ha letto questo documento (${ultimoErrore}).`, fallito: true});
+      if (!v) return void (esiti[n] = {dest: "", motivo: "L'assistente non si è espresso su questo documento."});
+      const valida = ammesse.includes(v.cartella), testo = senzaCodici(String(v.motivo || "").trim()), media = v.certezza === "media" ? " Certezza media: controlla." : "";
+      if (valida && v.certezza !== "bassa") return void (esiti[n] = {dest: v.cartella, motivo: testo + media + nota});
+      const na = !valida && v.nuova_attivita, titolo = na && String(na.titolo || "").trim();
+      if (titolo && v.certezza !== "bassa"){
+        let i = nuove.findIndex(x => x.titolo.toLowerCase() === titolo.toLowerCase());
+        if (i < 0) i = nuove.push({titolo, guida: suRichiesta(cod, na.tipo)?.chiave || "", descrizione: String(na.descrizione || "").trim(), data: dataOk(na.scadenza) ? na.scadenza : tra7, dataDaiDocumenti: dataOk(na.scadenza)}) - 1;
+        return void (esiti[n] = {dest: "nuova:" + i, motivo: testo + media + nota});
+      }
+      esiti[n] = {dest: "", motivo: testo + (valida ? ` Ipotesi poco sicura: «${nomeDestinazione(v.cartella)}».` : titolo ? ` Ipotesi poco sicura: nuova attività «${titolo}».` : "") + nota}; });
+  }
+  return {proposte: esiti, nuove, falliti: esiti.filter(e => e.fallito).length, errore: ultimoErrore};
 }
 async function apriSmistamento(cod, elementi){
   const aperte = attivitaAperte(cod);
@@ -959,16 +1009,21 @@ async function apriSmistamento(cod, elementi){
   const opzioni = opzioniDestinazione(cod) + `<option value="">Da smistare: decido dopo</option>`;
   apri(`<form class="dlg" id="fSmista" style="max-width:720px"><h2>Dove archivio i documenti?</h2>
     <div class="small muted" id="smStato" role="status">${conModello ? "L'assistente sta leggendo i documenti: può volerci mezzo minuto." : "Preparo la proposta…"}</div>
+    <div class="err" id="errSmistaAlto" role="alert"></div>
     <div id="smNuove"></div>
     ${elementi.map((e, n) => `<div style="margin-top:12px"><label><span><strong>${esc(e.nome)}</strong></span><select name="d${n}" disabled>${opzioni}</select></label><div class="small muted" data-motivo="${n}"></div></div>`).join("")}
     <div class="err" id="errSmista" role="alert"></div>
     <label style="display:flex;gap:8px;align-items:center;margin-top:14px"><input type="checkbox" name="avvia"> <span>Avvia subito la catena nelle attività che ricevono documenti (non per il fascicolo permanente)</span></label>
     <div class="actions"><button type="button" class="btn" data-chiudi>Annulla</button><button class="btn primary" id="smOk" disabled>Conferma</button></div></form>`);
-  const form = $("#fSmista"); let proposte = null, nuove = [], premessa = archivio.esempio ? "" : conModello ? "" : "Proposta senza lettura del contenuto. ";
+  const form = $("#fSmista"); let proposte = null, nuove = [], avviso = "", premessa = archivio.esempio ? "" : "Proposta senza lettura del contenuto. ";
+  const vivo = () => giro === apriSmistamento.giro && dlg.open && $("#fSmista") === form;
   if (conModello) try { const soloNome = e => ({name: e.nome, size: 0, soloNome: true});
-      const files = await Promise.all(elementi.map(e => e.file || (e.peso > 5 * 1048576 ? soloNome(e) : archivio.file(cod, e.id).then(f => f || soloNome(e), () => soloNome(e))))); ({proposte, nuove} = await classifica(cod, files, aperte)); }
-    catch (err) { premessa = "L'assistente non ha risposto: proposta senza lettura del contenuto. "; }
-  if (giro !== apriSmistamento.giro || !dlg.open || $("#fSmista") !== form) return;
+      const files = await Promise.all(elementi.map(e => e.file || (e.peso > 6 * 1048576 ? soloNome(e) : archivio.file(cod, e.id).then(f => f || soloNome(e), () => soloNome(e)))));
+      const esito = await classifica(cod, files, aperte, testo => { if (vivo()) $("#smStato").textContent = testo; }); ({proposte, nuove} = esito);
+      if (esito.falliti) avviso = esito.falliti === elementi.length ? `L'assistente non ha risposto (${esito.errore}). I documenti restano da smistare: scegli tu la destinazione oppure annulla e riprova tra qualche minuto.`
+        : `L'assistente non è riuscito a leggere ${quanti(esito.falliti, "documento", "documenti")} (${esito.errore}): li trovi impostati su «Da smistare».`; }
+    catch (err) { avviso = `L'assistente non ha risposto (${err.message || err}). I documenti restano da smistare: scegli tu la destinazione oppure annulla e riprova.`; proposte = elementi.map(() => ({dest: "", motivo: ""})); }
+  if (!vivo()) return;
   proposte ||= propostaSemplice(cod, elementi, aperte, premessa);
   if (nuove.length){
     $("#smNuove").innerHTML = nuove.map((x, k) => { const base = suRichiesta(cod, x.guida);
@@ -981,6 +1036,7 @@ async function apriSmistamento(cod, elementi){
   }
   proposte.forEach((p, n) => { const sel = form.elements["d" + n]; sel.value = p.dest; sel.disabled = false; form.querySelector(`[data-motivo="${n}"]`).textContent = p.motivo; });
   $("#smStato").textContent = "Controlla le destinazioni proposte e correggile dove serve. Nulla viene archiviato prima della conferma.";
+  if (avviso){ $("#errSmistaAlto").textContent = avviso; }
   $("#smOk").disabled = false;
   form.onsubmit = e => { e.preventDefault(); const dati = new FormData(form), scelte = elementi.map((x, n) => ({...x, dest: dati.get("d" + n) || ""}));
     const daCreare = nuove.map((x, k) => ({...x, titolo: String(dati.get("t" + k) || "").trim(), data: dati.get("s" + k) || "", usata: scelte.some(v => v.dest === "nuova:" + k)}));
