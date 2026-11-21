@@ -493,11 +493,11 @@ function ArchivioDrive(cfg){
     },
     async daSmistare(codice){
       const id = await cartellaAttesa(codice); if (!id) return []; cache.delete(id);
-      return (await figli(id)).filter(c => c.mimeType !== CARTELLA).map(c => ({id: c.id, nome: c.name, dim: dimensione(c.size), peso: Number(c.size) || 0}));
+      return (await figli(id)).filter(c => c.mimeType !== CARTELLA && !riservato(c.name)).map(c => ({id: c.id, nome: c.name, dim: dimensione(c.size), peso: Number(c.size) || 0}));
     },
     async caricaDaSmistare(codice, files){
       const id = await cartellaAttesa(codice, true); for (const file of files) await scrivi(id, file.name, file);
-      cache.delete(id); const n = (await figli(id)).filter(c => c.mimeType !== CARTELLA).length;
+      cache.delete(id); const n = (await figli(id)).filter(c => c.mimeType !== CARTELLA && !riservato(c.name)).length;
       await aggiornaScadenzario((_, tutto) => segnaAttesa(tutto, codice, n));
     },
     async sposta(codice, idFile, percorso){
@@ -506,7 +506,7 @@ function ArchivioDrive(cfg){
       cache.delete(a); const presenti = (await figli(a)).map(c => c.name); let nome = f.name, k = 2;
       while (presenti.includes(nome)){ const punto = f.name.lastIndexOf("."); nome = punto > 0 ? `${f.name.slice(0, punto)} (${k})${f.name.slice(punto)}` : `${f.name} (${k})`; k++; }
       await api(`${API}/files/${idFile}?addParents=${a}&removeParents=${da}&fields=id`, {method: "PATCH", headers: {"Content-Type": "application/json"}, body: JSON.stringify(nome === f.name ? {} : {name: nome})});
-      cache.delete(da); const restano = (await figli(da)).filter(c => c.mimeType !== CARTELLA).length, n = await contaDocumenti(a);
+      cache.delete(da); const restano = (await figli(da)).filter(c => c.mimeType !== CARTELLA && !riservato(c.name)).length, n = await contaDocumenti(a);
       await aggiornaScadenzario((_, tutto) => { segnaAttesa(tutto, codice, restano); const v = voce(percorso); if (v) v.documenti = n; });
     },
     async permanente(codice){ const esito = [];
@@ -1102,6 +1102,9 @@ function vistaAttivita(){
   $("#app").innerHTML = `<p class="muted">Leggo la cartella…</p>`;
   Promise.all([archivio.attivita(s.cartella), s.stato === "catena eseguita" ? archivio.proposte(s.cartella) : []]).then(([c, proposte]) => {
     if (stato.vista !== "attivita" || stato.arg !== s.cartella) return;
+    if (s.stato === "in coda" && c.marcatore !== "AVVIA" && !archivio.esempio && !vistaAttivita.riallineo){   // etichetta rimasta indietro: l'avvio non c'è più
+      vistaAttivita.riallineo = true;
+      return archivio.segna(s.cartella, "annulla").then(async () => { stato.dati = await archivio.carica(); }).finally(() => { vistaAttivita.riallineo = false; disegna(); }); }
     const daValutare = proposte.filter(p => p.stato === "da valutare").map(p => ({cartella: s.cartella, attivita: s.attivita, p})), decise = proposte.length - daValutare.length;
     const sezProposte = proposte.length ? `<h2>Proposte del riesame per la scheda</h2>` + (daValutare.length ? cartaProposte(daValutare, false) : "") +
       (decise ? `<div class="small muted" style="margin-top:8px">Già valutate: ${proposte.filter(p => p.stato === "accolta").length} accolte, ${proposte.filter(p => p.stato === "scartata").length} scartate.</div>` : "") : "";
@@ -1126,7 +1129,7 @@ function vistaAttivita(){
       <dt>Stato</dt><dd>${chip({...s, ndoc})} <span class="small muted">${esc(s.stato === "richiesta pronta" ? (ndoc ? "Documenti arrivati: puoi avviare la catena" : r?.inviata ? "In attesa dei documenti dal cliente" : "Rileggi la bozza e inviala al cliente") : k.nota)}</span></dd>
       <dt>Cartella su Drive</dt><dd class="small muted">${esc(s.cartella)}</dd></dl></div>
     <div class="actions" style="justify-content:flex-start;margin-top:10px">${s.stato === "svolta" ? `<button class="btn" id="btnRiapri">Riapri l'attività</button>`
-      : (inCorso ? `<button class="btn" id="btnAnnullaAvvio">Annulla l'avvio</button>` : "") + (s.stato === "catena eseguita" ? "" : `<button class="btn" id="btnSvolta">Segna come già svolta</button>`)}</div>
+      : (inCorso || s.stato === "in coda" ? `<button class="btn" id="btnAnnullaAvvio">Annulla l'avvio</button>` : "") + (s.stato === "catena eseguita" ? "" : `<button class="btn" id="btnSvolta">Segna come già svolta</button>`)}</div>
     ${sezProposte}${s.stato === "svolta" ? "" : sezRichiesta}
     <h2>Documenti ricevuti</h2>
     <div class="card rows">${ndoc ? c.documenti.map(d => `<div class="item"><div class="grow">${esc(d.nome)}</div><span class="small muted">${esc(d.dim)}</span></div>`).join("")
