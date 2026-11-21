@@ -327,7 +327,8 @@ function ArchivioEsempio(){
   const proposteEs = {[scadenze.find(s => s.stato === "catena eseguita").cartella]: [
     {campo: "temi_noti", testo: "Finanziamenti: saldo da riconciliare con la conferma bancaria", stato: "da valutare"},
     {campo: "richieste_ricorrenti", testo: "Conferma bancaria dei finanziamenti a fine esercizio", stato: "da valutare"}]};
-  const inAttesa = {"SOC_Alfa-Meccanica": [{id: "es1", nome: "Lettera della banca.pdf", dim: "96 KB"}]};
+  const inAttesa = {"SOC_Alfa-Meccanica": [{id: "es1", nome: "Lettera della banca.pdf", dim: "96 KB"}, {id: "es2", nome: "Statuto aggiornato.pdf", dim: "310 KB"}]};
+  cartelle["02_Incarichi/SOC_Alfa-Meccanica/Permanente/A_Incarico-e-accettazione"] = {documenti: [{nome: "Lettera d'incarico firmata.pdf", dim: "180 KB"}], output: [], marcatore: null};
   const aperteEs = n => (proposteEs[n] || []).filter(x => x.stato === "da valutare").length;
   return {
     esempio: true,
@@ -341,6 +342,8 @@ function ArchivioEsempio(){
     async sposta(codice, id, cartella){ await attesa(); const a = inAttesa[codice] || [], n = a.findIndex(x => x.id === id); if (n < 0) throw new Error("Il documento non è più tra quelli da smistare.");
       const [f] = a.splice(n, 1); (cartelle[cartella] ||= {documenti: [], output: [], marcatore: null}).documenti.push({nome: f.nome, dim: f.dim}); },
     async file(){ return null; },
+    async permanente(codice){ await attesa(); return PERMANENTE.map(p => ({sezione: p.id, file: (cartelle[`02_Incarichi/${codice}/${p.id}`]?.documenti || []).map((d, n) => ({id: `${p.id}|${n}`, nome: d.nome, dim: d.dim}))})); },
+    async scaricaId(){ toast("Nella versione collegata a Drive qui si scarica il documento."); },
     async salvaRegistro(nuovo){ await attesa(); registro.avvio = nuovo.avvio; registro.incarichi = structuredClone(nuovo.incarichi); },
     async attivita(cartella){ await attesa(); return structuredClone(cartelle[cartella] || {documenti:[], output:[], marcatore:null}); },
     async caricaDocumenti(cartella, files){ await attesa();
@@ -358,8 +361,9 @@ function ArchivioEsempio(){
       if (s.stato === "da fare") s.stato = "richiesta pronta"; s.daAggiornare = false; },
     async segnaImpatto(codice){ await attesa(); let n = 0;
       for (const s of scadenze) if (s.incarico === codice && ["catena eseguita", "richiesta pronta"].includes(s.stato)){ s.daAggiornare = true; n++; } return n; },
-    async creaAttivita({incarico, titolo, data}){ await attesa();
-      const cartella = `02_Incarichi/${incarico}/${fy}/X_Straordinarie/${titolo.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60)}`;
+    async creaAttivita({incarico, titolo, data, guida = ""}){ await attesa();
+      const base = (SU_RICHIESTA[registro.incarichi.find(i => i.codice === incarico)?.tipo] || []).find(x => x.chiave === guida);
+      const cartella = `02_Incarichi/${incarico}/${fy}/${base ? base.cartella : "X_Straordinarie"}/${titolo.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60)}`;
       scadenze.push({data, incarico, attivita: titolo, stato: "da fare", cartella}); cartelle[cartella] = {documenti: [], output: [], marcatore: null}; return cartella; },
     async salvaTesto(cartella, nome, testo){ await attesa();
       (cartelle[cartella] ||= {documenti:[], output:[], marcatore:null}).documenti.push({nome, dim: Math.max(1, Math.round(testo.length / 1024)) + " KB"}); },
@@ -501,6 +505,14 @@ function ArchivioDrive(cfg){
       cache.delete(da); const restano = (await figli(da)).filter(c => c.mimeType !== CARTELLA).length, n = await contaDocumenti(a);
       await aggiornaScadenzario((_, tutto) => { segnaAttesa(tutto, codice, restano); const v = voce(percorso); if (v) v.documenti = n; });
     },
+    async permanente(codice){ const esito = [];
+      for (const p of PERMANENTE){ const id = await cartella(`02_Incarichi/${codice}/${p.id}`); if (id) cache.delete(id);
+        esito.push({sezione: p.id, file: id ? (await figli(id)).filter(c => c.mimeType !== CARTELLA).map(c => ({id: c.id, nome: c.name, dim: dimensione(c.size)})) : []}); }
+      return esito;
+    },
+    async scaricaId(idFile, nome){
+      const a = document.createElement("a"); a.href = URL.createObjectURL(await (await api(`${API}/files/${idFile}?alt=media`)).blob()); a.download = nome; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    },
     async file(codice, idFile){
       const da = await cartellaAttesa(codice), f = da && (await figli(da)).find(c => c.id === idFile); if (!f) return null;
       const dati = await (await api(`${API}/files/${idFile}?alt=media`)).blob(); return new File([dati], f.name, {type: f.mimeType || dati.type});
@@ -545,13 +557,14 @@ function ArchivioDrive(cfg){
     },
     async segnaImpatto(codice){ let n = 0;
       await aggiornaScadenzario(tutte => { for (const v of tutte) if (v.incarico === codice && ["catena eseguita", "richiesta pronta"].includes(v.stato)){ v.da_rivedere = true; n++; } }); return n; },
-    async creaAttivita({incarico: codice, titolo, data, descrizione = ""}){
+    async creaAttivita({incarico: codice, titolo, data, descrizione = "", guida = ""}){
       const registro = await leggiRegistro(), inc = registro.incarichi.find(i => i.codice === codice);
       const [mm, gg] = inc.chiusura.split("-").map(Number), d = daIso(data), fine = new Date(d.getFullYear(), mm - 1, gg);
       const anno = Math.max(d <= fine ? d.getFullYear() : d.getFullYear() + 1, Number(inc.esercizio));
-      let relativa = `FY${anno}/X_Straordinarie/${slugAttivita(titolo)}`, n = 2;
-      while (inc.attivita_extra.some(e => e.cartella === relativa)) relativa = `FY${anno}/X_Straordinarie/${slugAttivita(titolo)}-${n++}`;
-      inc.attivita_extra.push({titolo, data, cartella: relativa, descrizione}); await scriviRegistro(registro);
+      const base = (SU_RICHIESTA[inc.tipo] || []).find(x => x.chiave === guida), sotto = base ? base.cartella : "X_Straordinarie";
+      let relativa = `FY${anno}/${sotto}/${slugAttivita(titolo)}`, n = 2;
+      while (inc.attivita_extra.some(e => e.cartella === relativa)) relativa = `FY${anno}/${sotto}/${slugAttivita(titolo)}-${n++}`;
+      inc.attivita_extra.push({titolo, data, cartella: relativa, descrizione, ...(base ? {guida} : {})}); await scriviRegistro(registro);
       const percorso = `02_Incarichi/${codice}/${relativa}`; await cartella(percorso, true);
       await aggiornaScadenzario(tutte => { tutte.push({data, incarico: codice, attivita: titolo, stato: "da fare", cartella: percorso, straordinaria: true, riferimento: "", richiesta_generata: null, richiesta_inviata: null, anticipata: false, documenti: 0, da_rivedere: false});
         tutte.sort((a, b) => a.data.localeCompare(b.data)); });
@@ -748,11 +761,11 @@ function vistaIncarico(){
     <div class="small muted" style="margin-bottom:10px">Carica qui quello che arriva dal cliente: i file vengono archiviati su Drive nella cartella dell'attività e restano pronti per l'analisi.</div>
     <div class="item" style="padding:0"><input type="file" id="docIn" multiple hidden>
       <select id="docDest" class="grow" aria-label="Attività di destinazione"><option value="">Proponi tu la destinazione</option>
-        ${sc.filter(s => !CHIUSI.includes(s.stato) && s.stato !== "in coda").map(s => `<option value="${esc(s.cartella)}">${esc(s.attivita)}, scadenza ${dataIt(s.data)}</option>`).join("")}
+        ${opzioniDestinazione(i.codice)}
         <option value="${DOPO}">Da smistare: decido dopo</option></select>
       <button class="btn primary" id="docCarica">Scegli i file</button></div>
     <div class="small muted" style="margin-top:8px">Puoi anche trascinare i file in questo riquadro. Senza una destinazione ${!archivio.esempio && stato.assistente?.chiave ? "l'assistente legge i documenti e propone dove metterli" : "ti propongo io dove metterli"}: nulla viene archiviato prima della tua conferma.</div></div>
-  <div id="attesaInc"></div><div id="propInc"></div>
+  <div id="attesaInc"></div><div id="permInc"></div><div id="propInc"></div>
   <h2>Richieste ricorrenti</h2>${listaModificabile(i, "richieste_ricorrenti", "Nessuna richiesta ricorrente.", "Nuova richiesta ricorrente")}
   <h2>Rischi e temi noti</h2>${listaModificabile(i, "temi_noti", "Nessun rischio o tema indicato.", "Nuovo rischio o tema da tenere presente")}
   <div class="small muted" style="margin-top:8px">Ogni modifica vale da subito per le richieste e le catene successive di questo incarico. Le attività già lavorate vengono segnate «da rivedere».</div>
@@ -779,14 +792,38 @@ function apriNuovaAttivita(cod){
   const d = oggi(); d.setDate(d.getDate() + 15);
   apri(`<form class="dlg" id="fAtt" novalidate><h2>Nuova attività</h2><div class="small muted">${esc(nomeIncarico(cod))}</div>
     <div class="fields"><label class="wide">Titolo<input type="text" name="titolo" placeholder="Per esempio: parere sulla variazione di bilancio n. 5"></label>
-      <label>Scadenza<input type="date" name="data" value="${iso(d)}"></label></div>
+      <label>Scadenza<input type="date" name="data" value="${iso(d)}"></label>
+      ${(SU_RICHIESTA[incarico(cod)?.tipo] || []).length ? `<label class="wide">Tipo<select name="guida"><option value="">Attività fuori programma</option>${SU_RICHIESTA[incarico(cod).tipo].map(x => `<option value="${esc(x.chiave)}">${esc(x.nome)}</option>`).join("")}</select></label>` : ""}</div>
+    <div class="small muted">Con un tipo, l'attività nasce in una sottocartella dedicata e usa la guida e i modelli di quel tipo.</div>
     <div class="err" id="errAtt" role="alert"></div>
     <div class="actions"><button type="button" class="btn" data-chiudi>Annulla</button><button class="btn primary">Crea</button></div></form>`);
   $("#fAtt").onsubmit = async e => { e.preventDefault(); const f = new FormData(e.target), titolo = f.get("titolo").trim(), data = f.get("data");
     if (!titolo) return $("#errAtt").textContent = "Indica il titolo dell'attività."; if (!data) return $("#errAtt").textContent = "Indica la scadenza.";
-    await archivio.creaAttivita({incarico: cod, titolo, data}); stato.dati = await archivio.carica(); dlg.close(); toast("Attività creata: compare in scadenze e calendario."); disegna(); };
+    await archivio.creaAttivita({incarico: cod, titolo, data, guida: f.get("guida") || ""}); stato.dati = await archivio.carica(); dlg.close(); toast("Attività creata: compare in scadenze e calendario."); disegna(); };
 }
 const DOPO = "__dopo";
+/* Fascicolo permanente: documenti che valgono per tutto il mandato. Le cartelle sono le stesse che crea il motore. */
+const PERMANENTE = [
+  {id: "Permanente/A_Incarico-e-accettazione", nome: "Fascicolo permanente: incarico e accettazione", breve: "Incarico e accettazione",
+   cosa: "Nomina, lettera d'incarico, accettazione, dichiarazioni di indipendenza e documenti del revisore. Solo archivio: la catena non li legge e non partono verso nessun fornitore.",
+   indizi: /identit|passaporto|patente|codice.?fiscale|curriculum|nomina|accettazion|indipendenz|incompatibil|ineleggibil|polizza|lettera.?d.?incarico|mandato/i},
+  {id: "Permanente/B_Conoscenza-del-cliente", nome: "Fascicolo permanente: conoscenza del cliente", breve: "Conoscenza del cliente",
+   cosa: "Statuto, regolamenti, organigramma, visure, contratti e atti pluriennali. La catena li riceve come contesto a ogni lavoro.",
+   indizi: /statuto|atto.?costitutivo|regolament|visura|organigramma|mutuo|leasing|convenzion|contratto/i}];
+/* Attività «su richiesta» del catalogo del motore: ogni richiesta concreta diventa una sottocartella con la stessa guida. */
+const SU_RICHIESTA = {
+  revisione_legale:     [{chiave: "accettazione", cartella: "A_Accettazione-e-pianificazione/Accettazione", nome: "Accettazione e mantenimento dell'incarico"}],
+  revisione_volontaria: [{chiave: "accettazione", cartella: "A_Accettazione-e-pianificazione/Accettazione", nome: "Accettazione e mantenimento dell'incarico"}],
+  ets:                  [{chiave: "accettazione", cartella: "A_Accettazione", nome: "Accettazione e mantenimento dell'incarico"}, {chiave: "bilancio_sociale", cartella: "E_Bilancio-sociale", nome: "Attestazione sul bilancio sociale"}],
+  ente_locale:          [{chiave: "pareri", cartella: "P_Pareri/Variazioni-e-altri-atti", nome: "Pareri su variazioni e altri atti"}, {chiave: "contrattazione_integrativa", cartella: "P_Pareri/Contrattazione-integrativa", nome: "Certificazione della contrattazione integrativa"},
+                         {chiave: "questionari", cartella: "Q_Questionari-Corte-dei-conti", nome: "Questionari alla Corte dei conti"}],
+};
+const suRichiesta = (cod, chiave) => (SU_RICHIESTA[incarico(cod)?.tipo] || []).find(x => x.chiave === chiave) || null;
+const percorsoPermanente = (cod, sezione) => `02_Incarichi/${cod}/${sezione.id}`;
+const permanenteDa = dest => PERMANENTE.find(x => String(dest).endsWith("/" + x.id));
+const nomeDestinazione = dest => permanenteDa(dest)?.nome || stato.dati.scadenze.find(x => x.cartella === dest)?.attivita || "attività";
+const opzioniDestinazione = cod => attivitaAperte(cod).map(s => `<option value="${esc(s.cartella)}">${esc(s.attivita)}, scadenza ${dataIt(s.data)}</option>`).join("") +
+  PERMANENTE.map(x => `<option value="${esc(percorsoPermanente(cod, x))}">${esc(x.nome)}</option>`).join("");
 const ETICHETTA_CAMPO = {temi_noti: "Rischio o tema noto", richieste_ricorrenti: "Richiesta ricorrente"};
 const attivitaAperte = cod => stato.dati.scadenze.filter(s => s.incarico === cod && !CHIUSI.includes(s.stato) && s.stato !== "in coda").sort((a, b) => a.data.localeCompare(b.data));
 const quanti = (n, uno, molti) => n === 1 ? "1 " + uno : n + " " + molti;
@@ -804,24 +841,27 @@ function legaDocumenti(){
 }
 async function archivia(cartella, files, avvia){
   await archivio.caricaDocumenti(cartella, files); if (avvia) await archivio.avvia(cartella);
-  stato.dati = await archivio.carica(); const s = stato.dati.scadenze.find(x => x.cartella === cartella);
-  toast((files.length === 1 ? "1 documento archiviato" : files.length + " documenti archiviati") + ` in «${s.attivita}»` + (avvia ? ": catena in coda." : ".")); disegna();
+  stato.dati = await archivio.carica();
+  toast((files.length === 1 ? "1 documento archiviato" : files.length + " documenti archiviati") + ` in «${nomeDestinazione(cartella)}»` + (avvia ? ": catena in coda." : ".")); disegna();
 }
 /* Sezioni della scheda che si leggono da Drive dopo il disegno: documenti da smistare e proposte del riesame. */
 async function sezioniIncarico(cod){
   const fermo = () => stato.vista !== "incarico" || stato.arg !== cod;
   const conProposte = stato.dati.scadenze.filter(s => s.incarico === cod && s.proposte);
-  const [attesa, gruppi] = await Promise.all([archivio.daSmistare(cod),
+  const [attesa, stabili, gruppi] = await Promise.all([archivio.daSmistare(cod), archivio.permanente(cod),
     Promise.all(conProposte.map(async s => (await archivio.proposte(s.cartella)).filter(p => p.stato === "da valutare").map(p => ({cartella: s.cartella, attivita: s.attivita, p}))))]);
   if (fermo() || !$("#propInc")) return;
   const voci = gruppi.flat();
   $("#propInc").innerHTML = voci.length ? `<h2>Proposte dal riesame</h2>` + cartaProposte(voci, true) : "";
-  const aperte = attivitaAperte(cod), opzioni = aperte.map(s => `<option value="${esc(s.cartella)}">${esc(s.attivita)}, scadenza ${dataIt(s.data)}</option>`).join("");
+  const opzioni = opzioniDestinazione(cod);
   stato.attesa = attesa;
   $("#attesaInc").innerHTML = attesa.length ? `<h2>Da smistare</h2><div class="card rows">` + attesa.map(f => `<div class="item"><div style="flex:1 1 100%">${esc(f.nome)} <span class="small muted">${esc(f.dim)}</span></div>
-      ${aperte.length ? `<select class="grow" aria-label="Destinazione di ${esc(f.nome)}">${opzioni}</select><button class="btn" data-sposta="${esc(f.id)}">Sposta</button>` : ""}</div>`).join("") +
-    `<div class="item">${aperte.length ? `<button class="btn primary" id="btnRileggi">${!archivio.esempio && stato.assistente?.chiave ? "Fai proporre all'assistente" : "Proponi la destinazione"}</button>` : ""}
-      <span class="small muted grow">${aperte.length ? "Documenti arrivati senza un'attività certa. Finché restano qui la catena non li legge." : "Nessuna attività aperta per questo incarico: creane una con «Nuova attività», poi sposta qui i documenti."}</span></div></div>` : "";
+      <select class="grow" aria-label="Destinazione di ${esc(f.nome)}">${opzioni}</select><button class="btn" data-sposta="${esc(f.id)}">Sposta</button></div>`).join("") +
+    `<div class="item"><button class="btn primary" id="btnRileggi">${!archivio.esempio && stato.assistente?.chiave ? "Fai proporre all'assistente" : "Proponi la destinazione"}</button>
+      <span class="small muted grow">Documenti arrivati senza una destinazione certa. Finché restano qui la catena non li legge.</span></div></div>` : "";
+  $("#permInc").innerHTML = `<h2>Fascicolo permanente</h2><div class="card rows">` + PERMANENTE.map(x => { const file = stabili.find(v => v.sezione === x.id)?.file || [];
+    return `<div class="item"><div class="grow"><strong>${esc(x.breve)}</strong> <span class="chip s-idle">${file.length}</span><div class="small muted">${esc(x.cosa)}</div></div></div>` +
+      file.map(f => `<div class="item"><div class="grow">${esc(f.nome)} <span class="small muted">${esc(f.dim)}</span></div><button class="btn" data-scaricaid="${esc(f.id)}" data-nome="${esc(f.nome)}">Scarica</button></div>`).join(""); }).join("") + `</div>`;
   const b = $("#btnRileggi"); if (b) b.onclick = () => apriSmistamento(cod, attesa.map(f => ({nome: f.nome, id: f.id, peso: f.peso || 0})));
 }
 function cartaProposte(voci, conAttivita){
@@ -846,25 +886,32 @@ async function decidiProposta(n, accolta){
 }
 async function spostaDocumento(cod, id, cartella){
   await archivio.sposta(cod, id, cartella); stato.dati = await archivio.carica();
-  toast(`Documento spostato in «${stato.dati.scadenze.find(x => x.cartella === cartella)?.attivita || "attività"}».`); disegna();
+  toast(`Documento spostato in «${nomeDestinazione(cartella)}».`); disegna();
 }
 /* Proposta senza modello: stessa attività per tutti, corretta dal nome del file quando richiama il titolo di un'attività. */
-function propostaSemplice(elementi, aperte, premessa){
+function propostaSemplice(cod, elementi, aperte, premessa){
   const base = aperte.find(s => s.richiesta?.inviata) || aperte.find(s => s.richiesta) || aperte[0];
-  const perche = base.richiesta?.inviata ? "ha una richiesta inviata e in attesa di documenti" : base.richiesta ? "ha una richiesta già generata" : "è la scadenza aperta più vicina";
-  const parole = t => t.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").split(/[^a-z0-9]+/).filter(w => w.length > 4 && !/^fy\d+$/.test(w));
-  return elementi.map(e => { const nel = parole(e.nome), per = aperte.find(s => parole(s.attivita).some(w => nel.includes(w)));
-    return per ? {dest: per.cartella, motivo: premessa + "Il nome del file richiama questa attività."} : {dest: base.cartella, motivo: premessa + `Questa attività ${perche}.`}; });
+  const perche = !base ? "" : base.richiesta?.inviata ? "ha una richiesta inviata e in attesa di documenti" : base.richiesta ? "ha una richiesta già generata" : "è la scadenza aperta più vicina";
+  const parole = t => t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/[^a-z0-9]+/).filter(w => w.length > 4 && !/^fy\d+$/.test(w));
+  return elementi.map(e => { const nel = parole(e.nome), stabile = PERMANENTE.find(x => x.indizi.test(e.nome)), per = aperte.find(s => parole(s.attivita).some(w => nel.includes(w)));
+    if (stabile) return {dest: percorsoPermanente(cod, stabile), motivo: premessa + "Dal nome sembra un documento che vale per tutto il mandato."};
+    if (per) return {dest: per.cartella, motivo: premessa + "Il nome del file richiama questa attività."};
+    return base ? {dest: base.cartella, motivo: premessa + `Questa attività ${perche}.`} : {dest: "", motivo: premessa + "Nessuna attività aperta: scegli tu la destinazione."}; });
 }
 const STRUMENTO_SMISTA = {name: "smista", description: "Assegna ogni documento ricevuto all'attività a cui si riferisce.",
   input_schema: {type: "object", required: ["assegnazioni"], properties: {assegnazioni: {type: "array", items: {type: "object", required: ["documento", "cartella", "motivo", "certezza"], properties: {
     documento: {type: "integer", description: "Numero del documento, come indicato tra parentesi quadre."},
     cartella: {type: "string", description: "Cartella dell'attività di destinazione, esattamente come compare nell'elenco; stringa vuota se non è chiaro."},
     motivo: {type: "string", description: "Una frase: che cosa è il documento e perché va lì."},
-    certezza: {type: "string", enum: ["alta", "media", "bassa"], description: "Quanto sei sicuro."}}}}}}};
-const ISTRUZIONI_SMISTA = `Sei l'assistente di un revisore legale italiano. Ricevi i documenti arrivati da un cliente e l'elenco delle attività aperte del suo incarico. Per ogni documento indica con lo strumento smista a quale attività si riferisce, in base al contenuto, al periodo a cui si riferisce e ai documenti richiesti per ciascuna attività.
+    certezza: {type: "string", enum: ["alta", "media", "bassa"], description: "Quanto sei sicuro."},
+    nuova_attivita: {type: "object", description: "Solo quando il documento riguarda una richiesta o un atto specifico che non corrisponde a nessuna destinazione esistente: in quel caso lascia vuota la cartella.", properties: {
+      titolo: {type: "string", description: "Titolo preciso, con la data dell'atto in formato gg.mm.aaaa, per esempio: Parere variazione di bilancio del 18.11.2026."},
+      tipo: {type: "string", description: "Tipo scelto dall'elenco attivita_su_richiesta; vuoto se nessuno corrisponde."},
+      scadenza: {type: "string", description: "Data entro cui serve il lavoro, AAAA-MM-GG, solo se risulta dai documenti; altrimenti vuota."},
+      descrizione: {type: "string", description: "Una frase su che cosa viene chiesto e da chi."}}}}}}}}};
+const ISTRUZIONI_SMISTA = `Sei l'assistente di un revisore legale italiano. Ricevi i documenti arrivati per un suo incarico, l'elenco delle attività aperte e le sezioni del fascicolo permanente. Per ogni documento indica con lo strumento smista la destinazione, in base al contenuto, al periodo a cui si riferisce e ai documenti richiesti per ciascuna attività.
 
-Regole: usa solo le cartelle dell'elenco, copiate esattamente. Se un documento serve a più attività scegli quella che lo richiede e scade prima. Se non è chiaro, o il documento non riguarda nessuna attività aperta, lascia la cartella vuota: finirà tra i documenti da smistare e deciderà il revisore. Non inventare: se di un documento conosci solo il nome, dillo nel motivo e non indicare certezza alta. Nel motivo chiama le attività con il loro titolo, mai con la cartella o con codici. Assegna tutti i documenti, una sola volta ciascuno.`;
+Regole: usa solo le cartelle degli elenchi, copiate esattamente. Vanno nel fascicolo permanente i documenti che valgono per tutto il mandato e non per una scadenza: nella sezione «incarico e accettazione» nomina, lettera d'incarico, accettazione, dichiarazioni di indipendenza o di assenza di cause di incompatibilità, polizza, curriculum e documenti d'identità o personali del revisore; nella sezione «conoscenza del cliente» statuto, atto costitutivo, regolamenti, organigramma, visure, contratti e atti pluriennali. Gli altri documenti vanno all'attività che li richiede; se servono a più attività scegli quella che scade prima. Quando i documenti riguardano una richiesta o un atto specifico che non corrisponde a nessuna attività aperta (per esempio una variazione di bilancio su cui l'ente chiede il parere, mentre tra le attività c'è solo il bilancio di previsione), non forzarli in un'attività simile: proponi una nuova attività. Lascia vuota la cartella e compila nuova_attivita con un titolo preciso che contenga la data dell'atto in formato gg.mm.aaaa, il tipo scelto da attivita_su_richiesta, la scadenza solo se risulta dai documenti e una descrizione di una frase. I documenti dello stesso atto devono avere la stessa nuova attività, con lo stesso identico titolo; atti diversi hanno attività diverse. Se non è chiaro, o il documento non riguarda nessuna destinazione, lascia la cartella vuota senza nuova_attivita: finirà tra i documenti da smistare e deciderà il revisore. Non inventare: se di un documento conosci solo il nome, dillo nel motivo e non indicare certezza alta. Nel motivo chiama le destinazioni con il loro titolo, mai con la cartella o con codici. Assegna tutti i documenti, una sola volta ciascuno.`;
 async function bloccoDocumento(f, conto){
   if (f.soloNome) return [{type: "text", text: "(Di questo documento conosci solo il nome.)"}];
   const nome = f.name.toLowerCase(), entra = limite => f.size <= limite && conto.usati + f.size <= 16 * 1048576 && (conto.usati += f.size, true);
@@ -878,7 +925,9 @@ async function classifica(cod, files, aperte, soloNomi = false){
   const elenco = await Promise.all(aperte.map(async s => { let richiesti = "";
     if (s.richiesta) try { richiesti = (await archivio.leggi(s.cartella, "00_richiesta.md")).slice(0, 2500); } catch (e) {}
     return {cartella: s.cartella, attivita: s.attivita, scadenza: s.data, stato: s.stato, richiesta_inviata: s.richiesta?.inviata || null, documenti_gia_ricevuti: s.ndoc || 0, richiesta_documenti: richiesti}; }));
-  const contenuto = [{type: "text", text: "Incarico e attività aperte:\n" + JSON.stringify({oggi: iso(oggi()), incarico: inc.denominazione, tipologia: TIPI[inc.tipo]?.nome || inc.tipo, attivita_aperte: elenco})}];
+  const contenuto = [{type: "text", text: "Incarico e attività aperte:\n" + JSON.stringify({oggi: iso(oggi()), incarico: inc.denominazione, tipologia: TIPI[inc.tipo]?.nome || inc.tipo, attivita_aperte: elenco,
+    attivita_su_richiesta: (SU_RICHIESTA[inc.tipo] || []).map(x => ({tipo: x.chiave, nome: x.nome})),
+    fascicolo_permanente: PERMANENTE.map(x => ({cartella: percorsoPermanente(cod, x), sezione: x.nome, contenuto: x.cosa}))})}];
   for (const [n, f] of files.entries()){
     contenuto.push({type: "text", text: `[Documento ${n + 1}: ${f ? f.name : "non leggibile"}]`});
     contenuto.push(...(f && !soloNomi ? await bloccoDocumento(f, conto) : [{type: "text", text: "(Di questo documento conosci solo il nome.)"}]));
@@ -888,49 +937,73 @@ async function classifica(cod, files, aperte, soloNomi = false){
     body: JSON.stringify({model: stato.assistente.modello || CONFIG.modelloAssistente || "claude-sonnet-5-5", max_tokens: 2000, system: ISTRUZIONI_SMISTA, tools: [STRUMENTO_SMISTA], tool_choice: {type: "tool", name: "smista"}, messages: [{role: "user", content: contenuto}]})});
   if (!r.ok){ if (!soloNomi && [400, 413].includes(r.status)) return classifica(cod, files, aperte, true); throw new Error("Il modello ha risposto " + r.status); }
   const uso = ((await r.json()).content || []).find(b => b.type === "tool_use" && b.name === "smista"), voci = uso?.input?.assegnazioni; if (!Array.isArray(voci)) throw new Error("Risposta senza assegnazioni");
-  return files.map((f, n) => { const v = voci.find(x => Number(x.documento) === n + 1), valida = v && aperte.some(s => s.cartella === v.cartella);
+  const ammesse = [...aperte.map(s => s.cartella), ...PERMANENTE.map(x => percorsoPermanente(cod, x))], nuove = [];
+  const tra7 = (() => { const d = oggi(); d.setDate(d.getDate() + 7); return iso(d); })();
+  const proposte = files.map((f, n) => { const v = voci.find(x => Number(x.documento) === n + 1), valida = v && ammesse.includes(v.cartella);
     if (!v) return {dest: "", motivo: "L'assistente non si è espresso su questo documento."};
-    const titolo = valida ? aperte.find(s => s.cartella === v.cartella).attivita : "", testo = senzaCodici(String(v.motivo || "").trim());
-    if (valida && v.certezza !== "bassa") return {dest: v.cartella, motivo: testo + (v.certezza === "media" ? " Certezza media: controlla." : "") + (soloNomi ? " Letto solo il nome del file." : "")};
-    return {dest: "", motivo: testo + (valida ? ` Ipotesi poco sicura: «${titolo}».` : "")}; });
+    const titolo = valida ? nomeDestinazione(v.cartella) : "", testo = senzaCodici(String(v.motivo || "").trim()), coda = soloNomi ? " Letto solo il nome del file." : "";
+    if (valida && v.certezza !== "bassa") return {dest: v.cartella, motivo: testo + (v.certezza === "media" ? " Certezza media: controlla." : "") + coda};
+    const na = !valida && v.nuova_attivita, nuovoTitolo = na && String(na.titolo || "").trim();
+    if (nuovoTitolo && v.certezza !== "bassa"){
+      let k = nuove.findIndex(x => x.titolo.toLowerCase() === nuovoTitolo.toLowerCase());
+      if (k < 0) k = nuove.push({titolo: nuovoTitolo, guida: suRichiesta(cod, na.tipo)?.chiave || "", descrizione: String(na.descrizione || "").trim(),
+        data: /^\d{4}-\d{2}-\d{2}$/.test(na.scadenza || "") && na.scadenza >= iso(oggi()) ? na.scadenza : tra7, dataDaiDocumenti: /^\d{4}-\d{2}-\d{2}$/.test(na.scadenza || "") && na.scadenza >= iso(oggi())}) - 1;
+      return {dest: "nuova:" + k, motivo: testo + (v.certezza === "media" ? " Certezza media: controlla." : "") + coda};
+    }
+    return {dest: "", motivo: testo + (valida ? ` Ipotesi poco sicura: «${titolo}».` : nuovoTitolo ? ` Ipotesi poco sicura: nuova attività «${nuovoTitolo}».` : "")}; });
+  return {proposte, nuove};
 }
 async function apriSmistamento(cod, elementi){
   const aperte = attivitaAperte(cod);
-  if (!aperte.length){ if (elementi.every(e => e.id)) return toast("Nessuna attività aperta per questo incarico: creane una con «Nuova attività».");
-    return eseguiSmistamento(cod, elementi.map(e => ({...e, dest: ""})), false, "Nessuna attività aperta per questo incarico. "); }
   const conModello = !archivio.esempio && !!stato.assistente?.chiave, giro = apriSmistamento.giro = (apriSmistamento.giro || 0) + 1;
-  const opzioni = aperte.map(s => `<option value="${esc(s.cartella)}">${esc(s.attivita)}, scadenza ${dataIt(s.data)}</option>`).join("") + `<option value="">Da smistare: decido dopo</option>`;
+  const opzioni = opzioniDestinazione(cod) + `<option value="">Da smistare: decido dopo</option>`;
   apri(`<form class="dlg" id="fSmista" style="max-width:720px"><h2>Dove archivio i documenti?</h2>
     <div class="small muted" id="smStato" role="status">${conModello ? "L'assistente sta leggendo i documenti: può volerci mezzo minuto." : "Preparo la proposta…"}</div>
+    <div id="smNuove"></div>
     ${elementi.map((e, n) => `<div style="margin-top:12px"><label><span><strong>${esc(e.nome)}</strong></span><select name="d${n}" disabled>${opzioni}</select></label><div class="small muted" data-motivo="${n}"></div></div>`).join("")}
-    <label style="display:flex;gap:8px;align-items:center;margin-top:14px"><input type="checkbox" name="avvia"> <span>Avvia subito la catena nelle attività che ricevono documenti</span></label>
+    <div class="err" id="errSmista" role="alert"></div>
+    <label style="display:flex;gap:8px;align-items:center;margin-top:14px"><input type="checkbox" name="avvia"> <span>Avvia subito la catena nelle attività che ricevono documenti (non per il fascicolo permanente)</span></label>
     <div class="actions"><button type="button" class="btn" data-chiudi>Annulla</button><button class="btn primary" id="smOk" disabled>Conferma</button></div></form>`);
-  const form = $("#fSmista"); let proposte = null, premessa = archivio.esempio ? "" : conModello ? "" : "Proposta senza lettura del contenuto. ";
+  const form = $("#fSmista"); let proposte = null, nuove = [], premessa = archivio.esempio ? "" : conModello ? "" : "Proposta senza lettura del contenuto. ";
   if (conModello) try { const soloNome = e => ({name: e.nome, size: 0, soloNome: true});
-      const files = await Promise.all(elementi.map(e => e.file || (e.peso > 5 * 1048576 ? soloNome(e) : archivio.file(cod, e.id).then(f => f || soloNome(e), () => soloNome(e))))); proposte = await classifica(cod, files, aperte); }
+      const files = await Promise.all(elementi.map(e => e.file || (e.peso > 5 * 1048576 ? soloNome(e) : archivio.file(cod, e.id).then(f => f || soloNome(e), () => soloNome(e))))); ({proposte, nuove} = await classifica(cod, files, aperte)); }
     catch (err) { premessa = "L'assistente non ha risposto: proposta senza lettura del contenuto. "; }
   if (giro !== apriSmistamento.giro || !dlg.open || $("#fSmista") !== form) return;
-  proposte ||= propostaSemplice(elementi, aperte, premessa);
+  proposte ||= propostaSemplice(cod, elementi, aperte, premessa);
+  if (nuove.length){
+    $("#smNuove").innerHTML = nuove.map((x, k) => { const base = suRichiesta(cod, x.guida);
+      return `<div class="card pad" style="margin-top:12px;border-left:4px solid var(--gold)"><strong>Nuova attività proposta</strong>
+        <div class="small muted" style="margin:2px 0 8px">${base ? `Sottocartella di «${esc(base.nome)}», con la sua guida e i suoi modelli.` : "Attività fuori programma."}${x.descrizione ? " " + esc(x.descrizione) : ""}</div>
+        <div class="fields"><label class="wide">Titolo e nome della cartella<input type="text" name="t${k}" value="${esc(x.titolo)}"></label>
+          <label>Scadenza del lavoro<input type="date" name="s${k}" value="${esc(x.data)}"></label></div>
+        <div class="small muted">${x.dataDaiDocumenti ? "Scadenza ricavata dai documenti: controllala." : "Dai documenti non risulta una scadenza: ho messo sette giorni da oggi, correggila se serve."}</div></div>`; }).join("");
+    form.querySelectorAll("select").forEach(sel => nuove.forEach((x, k) => sel.insertBefore(new Option("Nuova attività: " + x.titolo, "nuova:" + k), sel.lastElementChild)));
+  }
   proposte.forEach((p, n) => { const sel = form.elements["d" + n]; sel.value = p.dest; sel.disabled = false; form.querySelector(`[data-motivo="${n}"]`).textContent = p.motivo; });
   $("#smStato").textContent = "Controlla le destinazioni proposte e correggile dove serve. Nulla viene archiviato prima della conferma.";
   $("#smOk").disabled = false;
-  form.onsubmit = e => { e.preventDefault(); const dati = new FormData(form); dlg.close();
-    eseguiSmistamento(cod, elementi.map((x, n) => ({...x, dest: dati.get("d" + n) || ""})), dati.get("avvia") === "on"); };
+  form.onsubmit = e => { e.preventDefault(); const dati = new FormData(form), scelte = elementi.map((x, n) => ({...x, dest: dati.get("d" + n) || ""}));
+    const daCreare = nuove.map((x, k) => ({...x, titolo: String(dati.get("t" + k) || "").trim(), data: dati.get("s" + k) || "", usata: scelte.some(v => v.dest === "nuova:" + k)}));
+    if (daCreare.some(x => x.usata && (!x.titolo || !x.data))) return $("#errSmista").textContent = "Indica titolo e scadenza di ogni nuova attività.";
+    dlg.close(); eseguiSmistamento(cod, scelte, dati.get("avvia") === "on", "", daCreare); };
 }
 /* Esegue lo smistamento confermato: carica i file nuovi, sposta quelli già su Drive, lascia in attesa quelli senza destinazione. */
-async function eseguiSmistamento(cod, elementi, avvia, premessa = ""){
-  const perCartella = new Map(); let inAttesa = 0;
+async function eseguiSmistamento(cod, elementi, avvia, premessa = "", nuove = []){
+  const perCartella = new Map(), create = new Set(); let inAttesa = 0, avviate = 0;
+  for (const [k, x] of nuove.entries()){ if (!x.usata) continue;
+    const percorso = await archivio.creaAttivita({incarico: cod, titolo: x.titolo, data: x.data, descrizione: x.descrizione, guida: x.guida}); create.add(percorso);
+    for (const e of elementi) if (e.dest === "nuova:" + k) e.dest = percorso; }
   for (const e of elementi){ if (!e.dest){ inAttesa++; continue; } if (!perCartella.has(e.dest)) perCartella.set(e.dest, []); perCartella.get(e.dest).push(e); }
   for (const [dest, voci] of perCartella){
     const nuovi = voci.filter(v => v.file).map(v => v.file); if (nuovi.length) await archivio.caricaDocumenti(dest, nuovi);
     for (const v of voci.filter(x => !x.file && x.id)) await archivio.sposta(cod, v.id, dest);
-    if (avvia) await archivio.avvia(dest);
+    if (avvia && !permanenteDa(dest)){ await archivio.avvia(dest); avviate++; }
   }
   const daParcheggiare = elementi.filter(e => !e.dest && e.file).map(e => e.file); if (daParcheggiare.length) await archivio.caricaDaSmistare(cod, daParcheggiare);
   stato.dati = await archivio.carica();
-  const parti = [...perCartella].map(([dest, voci]) => `${voci.length} in «${stato.dati.scadenze.find(x => x.cartella === dest)?.attivita || "attività"}»`);
+  const parti = [...perCartella].map(([dest, voci]) => `${voci.length} in «${nomeDestinazione(dest)}»` + (create.has(dest) ? " (nuova attività)" : ""));
   if (inAttesa) parti.push(`${inAttesa} da smistare`);
-  toast(premessa + `${quanti(elementi.length, "documento", "documenti")}: ${parti.join(", ")}.` + (avvia && perCartella.size ? " Catena in coda." : "")); disegna();
+  toast(premessa + `${quanti(elementi.length, "documento", "documenti")}: ${parti.join(", ")}.` + (avviate ? " Catena in coda." : "")); disegna();
 }
 function promemoria(s){
   const r = s.richiesta;
@@ -1063,7 +1136,8 @@ const P = (tipo, descrizione, extra = {}) => ({type: tipo, description: descrizi
 const STRUMENTI = [
   {name: "crea_attivita", description: "Propone di registrare un'attività fuori programma (parere, attestazione, verifica straordinaria) nel fascicolo di un incarico.",
    input_schema: {type: "object", required: ["incarico", "titolo", "data"], properties: {
-     incarico: P("string", "Codice dell'incarico, esattamente come nell'elenco."), titolo: P("string", "Titolo breve dell'attività."),
+     incarico: P("string", "Codice dell'incarico, esattamente come nell'elenco."), titolo: P("string", "Titolo preciso dell'attività; per un atto specifico includi la sua data in formato gg.mm.aaaa, per esempio: Parere variazione di bilancio del 18.11.2026."),
+     tipo: P("string", "Chiave scelta da attivita_su_richiesta dell'incarico, se l'attività è di quel tipo; altrimenti vuoto."),
      data: P("string", "Scadenza in formato AAAA-MM-GG."), descrizione: P("string", "Una o due frasi su cosa viene chiesto e da chi."),
      salva_messaggio: P("boolean", "Vero se il messaggio dell'utente contiene il testo di una mail da archiviare nella cartella."),
      archivia_allegati: P("boolean", "Vero se gli allegati vanno archiviati nella cartella."), avvia_catena: P("boolean", "Vero solo se l'utente chiede di avviare subito l'analisi.")}}},
@@ -1080,6 +1154,9 @@ const STRUMENTI = [
    input_schema: {type: "object", required: ["cartella", "data"], properties: {cartella: P("string", "Cartella dell'attività."), data: P("string", "Nuova data, AAAA-MM-GG.")}}},
   {name: "genera_richiesta", description: "Propone di generare subito la richiesta documenti di un'attività.",
    input_schema: {type: "object", required: ["cartella"], properties: {cartella: P("string", "Cartella dell'attività.")}}},
+  {name: "archivia_nel_permanente", description: "Propone di archiviare gli allegati nel fascicolo permanente di un incarico: documenti che valgono per tutto il mandato e non per una scadenza.",
+   input_schema: {type: "object", required: ["incarico", "sezione"], properties: {incarico: P("string", "Codice dell'incarico."),
+     sezione: P("string", "incarico_e_accettazione per nomina, lettera d'incarico, dichiarazioni e documenti del revisore; conoscenza_del_cliente per statuto, regolamenti, organigramma, contratti pluriennali.", {enum: ["incarico_e_accettazione", "conoscenza_del_cliente"]})}}},
   {name: "metti_da_smistare", description: "Propone di archiviare gli allegati tra i documenti da smistare di un incarico, quando è chiaro il cliente ma non l'attività a cui si riferiscono.",
    input_schema: {type: "object", required: ["incarico"], properties: {incarico: P("string", "Codice dell'incarico.")}}},
   {name: "rinvia", description: "Indica in quale chat conviene approfondire una domanda tecnica che richiede più lavoro di quello possibile qui.",
@@ -1095,7 +1172,7 @@ Cosa puoi fare:
 3. Rispondi alle domande tecniche in modo sintetico. Cita norme e principi solo se ne sei certo; se non lo sei, dillo. Ricorda che i riferimenti vanno riscontrati sulla fonte.
 4. Se la domanda richiede un lavoro più ampio, dai comunque l'orientamento essenziale e usa lo strumento rinvia. Criteri: Claude per giudizio professionale, interpretazione di norme e principi, redazione di pareri; Gemini per molti documenti o file voluminosi da leggere insieme e per ricerche su fonti online; ChatGPT per testi operativi, checklist, scalette, riformulazioni.
 
-Regole: negli strumenti usa i codici degli incarichi e le cartelle esattamente come compaiono nei dati. Nel testo che scrivi al revisore, invece, chiama sempre gli incarichi con la denominazione (per esempio «Comune di Gamma») e non riportare mai codici con prefisso, come SOC_, VOL_, ETS_ o EL_, né percorsi di cartelle. Significato degli stati: «da fare» = richiesta documenti non ancora generata; «richiesta pronta» = richiesta già generata, da inviare al cliente se richiesta_inviata è vuoto (non proporre di generarla di nuovo: ricorda di inviarla); «in coda» = catena in avvio; «catena eseguita» = risultati da leggere. proposte_da_valutare = voci che il riesame propone di aggiungere alla scheda dell'incarico: il revisore le accoglie o le scarta nella pagina dell'incarico. documenti_da_smistare = documenti ricevuti e non ancora assegnati a un'attività: si assegnano nella pagina dell'incarico. Se manca un'informazione necessaria (quale incarico, quale data), chiedila invece di inventarla. Le date negli strumenti sono in formato AAAA-MM-GG. Le comunicazioni ai clienti le invia sempre il revisore: tu al massimo prepari una bozza nel testo.`;
+Regole: negli strumenti usa i codici degli incarichi e le cartelle esattamente come compaiono nei dati. Nel testo che scrivi al revisore, invece, chiama sempre gli incarichi con la denominazione (per esempio «Comune di Gamma») e non riportare mai codici con prefisso, come SOC_, VOL_, ETS_ o EL_, né percorsi di cartelle. Significato degli stati: «da fare» = richiesta documenti non ancora generata; «richiesta pronta» = richiesta già generata, da inviare al cliente se richiesta_inviata è vuoto (non proporre di generarla di nuovo: ricorda di inviarla); «in coda» = catena in avvio; «catena eseguita» = risultati da leggere. proposte_da_valutare = voci che il riesame propone di aggiungere alla scheda dell'incarico: il revisore le accoglie o le scarta nella pagina dell'incarico. documenti_da_smistare = documenti ricevuti e non ancora assegnati: si assegnano nella pagina dell'incarico. Ogni incarico ha un fascicolo permanente per i documenti che valgono per tutto il mandato: la sezione «incarico e accettazione» è solo archivio, la sezione «conoscenza del cliente» viene letta dalla catena come contesto. Se manca un'informazione necessaria (quale incarico, quale data), chiedila invece di inventarla. Le date negli strumenti sono in formato AAAA-MM-GG. Le comunicazioni ai clienti le invia sempre il revisore: tu al massimo prepari una bozza nel testo.`;
 const senzaCodici = t => [...stato.dati.registro.incarichi].sort((a, b) => b.codice.length - a.codice.length)
   .reduce((x, i) => i.codice && i.denominazione ? x.split(i.codice).join(i.denominazione) : x, t || "");
 const nomeMail = () => { const d = new Date(); return `Mail ricevuta ${iso(d)} ${String(d.getHours()).padStart(2, "0")}.${String(d.getMinutes()).padStart(2, "0")}.txt`; };
@@ -1105,7 +1182,7 @@ const base64 = file => new Promise((ok, no) => { const r = new FileReader(); r.o
 function contestoPerModello(){
   const aperte = stato.dati.scadenze.filter(s => !CHIUSI.includes(s.stato) || s.daAggiornare || s.proposte).sort((a, b) => a.data.localeCompare(b.data)).slice(0, 80);
   return JSON.stringify({oggi: iso(oggi()),
-    incarichi: stato.dati.registro.incarichi.map(i => ({codice: i.codice, denominazione: i.denominazione, tipo: TIPI[i.tipo]?.nome || i.tipo, referenti: i.referenti.map(r => `${r.nome} (${r.ruolo})`), richieste_ricorrenti: i.richieste_ricorrenti, temi_noti: i.temi_noti, documenti_da_smistare: stato.dati.smistare?.[i.codice] || 0})),
+    incarichi: stato.dati.registro.incarichi.map(i => ({codice: i.codice, denominazione: i.denominazione, tipo: TIPI[i.tipo]?.nome || i.tipo, referenti: i.referenti.map(r => `${r.nome} (${r.ruolo})`), richieste_ricorrenti: i.richieste_ricorrenti, temi_noti: i.temi_noti, documenti_da_smistare: stato.dati.smistare?.[i.codice] || 0, attivita_su_richiesta: (SU_RICHIESTA[i.tipo] || []).map(x => ({tipo: x.chiave, nome: x.nome}))})),
     scadenze_aperte: aperte.map(s => ({cartella: s.cartella, incarico: s.incarico, attivita: s.attivita, data: s.data, stato: s.stato, richiesta_inviata: s.richiesta?.inviata || null, documenti_ricevuti: s.ndoc || 0, da_rivedere: !!s.daAggiornare, proposte_da_valutare: s.proposte || 0}))});
 }
 async function blocchiAllegati(files){
@@ -1126,8 +1203,8 @@ function azioneDa(uso, testo, files){
   const dataOk = d => /^\d{4}-\d{2}-\d{2}$/.test(d || "");
   switch (uso.name){
     case "crea_attivita": if (!inc || !dataOk(a.data)) return manca(`Creare l'attività «${a.titolo}»`);
-      return {testo: `Creo l'attività «${a.titolo}» nel fascicolo di ${inc.denominazione}, scadenza ${dataIt(a.data)}` + (a.salva_messaggio ? "; archivio il testo della mail" : "") + (a.archivia_allegati && files.length ? `; archivio ${files.length === 1 ? "l'allegato" : "i " + files.length + " allegati"}` : "") + (a.avvia_catena ? "; avvio la catena" : ""),
-        fai: async () => { const c = await archivio.creaAttivita({incarico: inc.codice, titolo: a.titolo, data: a.data, descrizione: a.descrizione || ""});
+      return {testo: `Creo l'attività «${a.titolo}» nel fascicolo di ${inc.denominazione}${suRichiesta(inc.codice, a.tipo) ? `, tra «${suRichiesta(inc.codice, a.tipo).nome}»` : ""}, scadenza ${dataIt(a.data)}` + (a.salva_messaggio ? "; archivio il testo della mail" : "") + (a.archivia_allegati && files.length ? `; archivio ${files.length === 1 ? "l'allegato" : "i " + files.length + " allegati"}` : "") + (a.avvia_catena ? "; avvio la catena" : ""),
+        fai: async () => { const c = await archivio.creaAttivita({incarico: inc.codice, titolo: a.titolo, data: a.data, descrizione: a.descrizione || "", guida: suRichiesta(inc.codice, a.tipo)?.chiave || ""});
           if (a.salva_messaggio) await archivio.salvaTesto(c, nomeMail(), testo);
           if (a.archivia_allegati && files.length) await archivio.caricaDocumenti(c, files);
           if (a.avvia_catena) await archivio.avvia(c); }};
@@ -1144,6 +1221,8 @@ function azioneDa(uso, testo, files){
           r ? Object.assign(r, nuovo) : lista.push(nuovo); await archivio.salvaRegistro(stato.dati.registro); }};
     case "sposta_scadenza": if (!sc || !dataOk(a.data)) return manca("Spostare una scadenza");
       return {testo: `Sposto la scadenza di «${sc.attivita}» (${nomeIncarico(sc.incarico)}) dal ${dataIt(sc.data)} al ${dataIt(a.data)}`, fai: () => archivio.aggiornaScadenza(sc.cartella, {data: a.data})};
+    case "archivia_nel_permanente": { const sezione = PERMANENTE[a.sezione === "conoscenza_del_cliente" ? 1 : 0]; if (!inc || !files.length) return manca("Archiviare nel fascicolo permanente");
+      return {testo: `Archivio ${files.length === 1 ? "l'allegato" : "i " + files.length + " allegati"} in «${sezione.nome}» di ${inc.denominazione}`, fai: () => archivio.caricaDocumenti(percorsoPermanente(inc.codice, sezione), files)}; }
     case "metti_da_smistare": if (!inc || !files.length) return manca("Mettere i documenti tra quelli da smistare");
       return {testo: `Metto ${files.length === 1 ? "l'allegato" : "i " + files.length + " allegati"} tra i documenti da smistare di ${inc.denominazione}`, fai: () => archivio.caricaDaSmistare(inc.codice, files)};
     case "genera_richiesta": if (!sc) return manca("Generare una richiesta documenti");
@@ -1324,6 +1403,7 @@ document.addEventListener("click", e => {
   if (d.voce){ const [c, campo, n] = d.voce.split("|"); return apriVoce(c, campo, Number(n)); }
   if (d.vocedel){ const [c, campo, n] = d.vocedel.split("|"); return chiedi("Eliminare questa voce?", "Elimina").then(si => si && cambiaVoci(c, campo, a => a.splice(Number(n), 1), "Eliminato.")); }
   if (d.prop){ const [n, esito] = d.prop.split("|"); return decidiProposta(Number(n), esito === "ok"); }
+  if (d.scaricaid) return archivio.scaricaId(d.scaricaid, d.nome);
   if (d.sposta) return spostaDocumento(stato.arg, d.sposta, b.closest(".item").querySelector("select").value);
   if (d.nuovaatt) return apriNuovaAttivita(d.nuovaatt);
   if (d.att) return vai("attivita", d.att);
