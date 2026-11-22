@@ -56,7 +56,7 @@ h2{font-size:17px;font-weight:600;margin:24px 0 10px}
 .tile.on{border-top-color:var(--gold);outline:2px solid var(--focus);outline-offset:-1px}
 .tile.on b{font-weight:700}
 .filters{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
-select,input[type=text],input[type=email],input[type=tel],input[type=date],input[type=number],textarea{
+select,input[type=text],input[type=password],input[type=email],input[type=tel],input[type=date],input[type=number],textarea{
   background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%;font-size:16px}
 .filters select{width:auto;min-width:200px}
 .rows>*+*{border-top:1px solid var(--line)}
@@ -158,6 +158,32 @@ header.top :focus-visible{outline-color:var(--gold)}
   .dow{padding:6px 2px;text-align:center}
   h1{font-size:24px}
 }
+
+#toast div+div{margin-top:7px;padding-top:7px;border-top:1px solid rgba(255,255,255,.22)}
+/* attese e transizioni */
+@keyframes giro{to{transform:rotate(360deg)}}
+@keyframes scorri{from{background-position:-45% 0}to{background-position:145% 0}}
+@keyframes entra{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes velo{from{opacity:0}to{opacity:1}}
+.spin{display:inline-block;flex:none;width:1em;height:1em;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:giro .7s linear infinite;vertical-align:-.15em}
+.carico{display:flex;flex-direction:column;align-items:center;gap:16px;padding:14vh 16px;color:var(--muted);text-align:center;animation:velo .25s ease-out}
+.carico .spin{width:36px;height:36px;border-width:3px;color:var(--gold)}
+.attesa{display:flex;align-items:center;gap:10px;color:var(--muted);padding:14px 2px;font-size:14px}
+.attesa .spin{color:var(--gold)}
+#barra{position:fixed;top:0;left:0;right:0;height:3px;z-index:80;pointer-events:none;opacity:0;transition:opacity .2s;
+  background:linear-gradient(90deg,transparent,var(--gold),transparent) no-repeat;background-size:45% 100%;animation:scorri 1.1s linear infinite}
+body.occupato #barra{opacity:1}
+body.occupato{cursor:progress}
+#app.entra{animation:entra .24s ease-out}
+#app{transition:opacity .18s}
+#app:focus-visible{outline:none}
+#app.aggiorna{opacity:.55;pointer-events:none}
+dialog[open]{animation:entra .2s ease-out}
+dialog::backdrop{animation:velo .2s ease-out}
+.btn[aria-busy=true]{pointer-events:none;opacity:.8}
+.btn[aria-busy=true]::before{content:"";display:inline-block;width:.9em;height:.9em;margin-right:8px;
+  border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:giro .7s linear infinite;vertical-align:-.12em}
+@media (prefers-reduced-motion:reduce){#app.entra,dialog[open],dialog::backdrop,.carico{animation:none}#app{transition:none}}
 </style>
 </head>
 <body>
@@ -176,6 +202,7 @@ header.top :focus-visible{outline-color:var(--gold)}
 </header>
 <main id="app" tabindex="-1"></main>
 <dialog id="dlg"></dialog>
+<div id="barra" aria-hidden="true"></div>
 <div id="toast" role="status" aria-live="polite"></div>
 
 <script>/* Configurazione: sta in config.js accanto alla pagina, cosi' gli aggiornamenti non la toccano. Senza, la pagina mostra i dati di esempio. */
@@ -240,7 +267,7 @@ const TIPI = {
 const STATI = {
   "da fare":              {classe: "s-idle", nota: "Nessuna richiesta ancora generata"},
   "richiesta pronta":     {classe: "s-info", nota: "Richiesta documentale pronta: in attesa dei documenti"},
-  "in coda":              {classe: "s-warn", nota: "Catena avviata: parte entro mezz'ora"},
+  "in coda":              {classe: "s-warn", nota: "Catena avviata: in attesa del motore"},
   "catena eseguita":      {classe: "s-ok",   nota: "Lavoro completato: leggere il riesame"},
   "svolta":               {classe: "s-ok",   nota: "Svolta da te, senza catena: gli agenti non lavorano su questa cartella"},
   "errore":               {classe: "s-bad",  nota: "Catena interrotta: vedere la mail di avviso"},
@@ -257,14 +284,35 @@ const daIso = s => { const [a,m,g] = s.split("-").map(Number); return new Date(a
 const giorni = s => Math.round((daIso(s) - oggi()) / 864e5);
 const dataIt = s => daIso(s).toLocaleDateString("it-IT", {day:"2-digit", month:"2-digit", year:"numeric"});
 const distanza = g => g === 0 ? "oggi" : g === 1 ? "domani" : g > 1 ? `tra ${g} giorni` : g === -1 ? "ieri" : `${-g} giorni fa`;
-function toast(testo){ const t = $("#toast"); t.textContent = testo; t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 3200); }
+function toast(testo){ const t = $("#toast"); if (!t.classList.contains("show")) t.textContent = "";      // più avvisi ravvicinati si impilano, non si coprono
+  let riga = [...t.children].find(r => r.textContent === testo); if (!riga){ riga = document.createElement("div"); riga.textContent = testo; t.append(riga); }
+  t.classList.add("show"); clearTimeout(riga.t);                                 // ogni avviso dura 3,6 secondi per conto suo
+  riga.t = setTimeout(() => { if (t.children.length > 1) riga.remove(); else t.classList.remove("show"); }, 3600); }
+
+/* ---------- attese: barra in alto mentre la rete lavora, rotelline nei punti di carico ---------- */
+let attese = 0;
+function occupato(delta){ attese = Math.max(0, attese + delta);          // compare dopo 160 ms di lavoro, resta 220 ms oltre l'ultima chiamata
+  if (attese){ clearTimeout(occupato.fine); occupato.fine = null;
+    if (!occupato.inizio && !document.body.classList.contains("occupato")) occupato.inizio = setTimeout(() => { occupato.inizio = null; document.body.classList.add("occupato"); }, 160); }
+  else if (!occupato.fine) occupato.fine = setTimeout(() => { occupato.fine = null; clearTimeout(occupato.inizio); occupato.inizio = null; document.body.classList.remove("occupato"); }, 220); }
+const conAttesa = async promessa => { occupato(1); try { return await promessa; } finally { occupato(-1); } };
+const rete = (url, opzioni) => conAttesa(fetch(url, opzioni));
+const caricamento = testo => `<div class="carico" role="status"><span class="spin"></span><div>${esc(testo)}</div></div>`;
+const attesaRiga = testo => `<div class="attesa" role="status"><span class="spin"></span><span>${esc(testo)}</span></div>`;
+async function conPulsante(el, azione){ if (el.getAttribute("aria-busy") === "true") return; el.setAttribute("aria-busy", "true");
+  try { return await azione(); } finally { if (el.isConnected) el.removeAttribute("aria-busy"); } }
+/* Nei riquadri: se il salvataggio fa partire una chiamata, il pulsante mostra la rotellina finché la rete lavora. */
+function legaAttesaRiquadri(){ dlg.addEventListener("submit", e => { const b = e.submitter, prima = attese; if (!b) return;
+  setTimeout(() => { if (attese <= prima || !b.isConnected) return; b.setAttribute("aria-busy", "true");
+    const fine = setInterval(() => { if (attese && b.isConnected && dlg.open) return; clearInterval(fine); if (b.isConnected) b.removeAttribute("aria-busy"); }, 120); }, 0); }, true); }
+function ingresso(){ const app = $("#app"); app.classList.remove("entra"); void app.offsetWidth; app.classList.add("entra"); }
 
 /* ---------- archivio di esempio ---------- */
 function ArchivioEsempio(){
   const piu = n => { const d = oggi(); d.setDate(d.getDate()+n); return iso(d); };
   const fy = "FY" + oggi().getFullYear();
   const registro = {
-    avvio: piu(-10),
+    avvio: piu(-10), revisore: "",
     incarichi: [
       {codice:"SOC_Alfa-Meccanica", denominazione:"Alfa Meccanica S.r.l.", tipo:"revisione_legale", ruolo:"Revisore legale dei conti",
        esercizio:oggi().getFullYear(), chiusura:"12-31", assemblea:"", significativita:"",
@@ -324,7 +372,7 @@ function ArchivioEsempio(){
       c.output = ["01_strategia.md","02_piano.md","03_esecuzione.md","04_controllo.md","05_riesame.md","05_riesame.docx","06_riepilogo.md"]; }
     cartelle[s.cartella] = c;
   }
-  const attesa = () => new Promise(r => setTimeout(r, 120));
+  const attesa = () => conAttesa(new Promise(r => setTimeout(r, 120)));
   const proposteEs = {[scadenze.find(s => s.stato === "catena eseguita").cartella]: [
     {campo: "temi_noti", testo: "Finanziamenti: saldo da riconciliare con la conferma bancaria", stato: "da valutare"},
     {campo: "richieste_ricorrenti", testo: "Conferma bancaria dei finanziamenti a fine esercizio", stato: "da valutare"}]};
@@ -345,7 +393,8 @@ function ArchivioEsempio(){
     async file(){ return null; },
     async permanente(codice){ await attesa(); return PERMANENTE.map(p => ({sezione: p.id, file: (cartelle[`02_Incarichi/${codice}/${p.id}`]?.documenti || []).map((d, n) => ({id: `${p.id}|${n}`, nome: d.nome, dim: d.dim}))})); },
     async scaricaId(){ toast("Nella versione collegata a Drive qui si scarica il documento."); },
-    async salvaRegistro(nuovo){ await attesa(); registro.avvio = nuovo.avvio; registro.incarichi = structuredClone(nuovo.incarichi); },
+    async salvaRegistro(nuovo){ await attesa(); registro.avvio = nuovo.avvio; registro.revisore = nuovo.revisore || ""; registro.incarichi = structuredClone(nuovo.incarichi); },
+    async leggiMotore(){ return null; }, async salvaMotore(){},
     async attivita(cartella){ await attesa(); return structuredClone(cartelle[cartella] || {documenti:[], output:[], marcatore:null}); },
     async caricaDocumenti(cartella, files){ await attesa();
       const c = cartelle[cartella] ||= {documenti:[], output:[], marcatore:null};
@@ -398,7 +447,7 @@ function ArchivioDrive(cfg){
   const cache = new Map();
   const chiediToken = prompt => new Promise((ok, no) => { attesa = {ok, no}; client.requestAccessToken({prompt}); });
   async function api(url, opts = {}, riprova = true){
-    const r = await fetch(url, {...opts, headers: {...(opts.headers || {}), Authorization: "Bearer " + token}});
+    const r = await rete(url, {...opts, headers: {...(opts.headers || {}), Authorization: "Bearer " + token}});
     if (r.status === 401 && riprova){ await chiediToken(""); return api(url, opts, false); }
     if (!r.ok) throw new Error(`Drive ha risposto ${r.status}. ${(await r.text()).slice(0, 160)}`);
     return r;
@@ -587,6 +636,8 @@ function ArchivioDrive(cfg){
     },
     async leggiAssistente(){ const f = await trova(await cartella(REG), "assistente.json"); try { return f ? JSON.parse(await testo(f.id)) : null; } catch (e) { return null; } },
     async salvaAssistente(dati){ await scrivi(await cartella(REG, true), "assistente.json", JSON.stringify(dati, null, 1), "application/json"); },
+    async leggiMotore(){ const f = await trova(await cartella(REG), "motore.json"); try { return f ? JSON.parse(await testo(f.id)) : null; } catch (e) { return null; } },
+    async salvaMotore(dati){ await scrivi(await cartella(REG, true), "motore.json", JSON.stringify(dati || {}, null, 1), "application/json"); },
     async leggi(percorso, nome){ const f = await trova(await cartella(`${percorso}/${OUT}`), nome); if (!f) throw new Error("File non trovato: " + nome); return testo(f.id); },
     async scarica(percorso, nome){
       const f = await trova(await cartella(`${percorso}/${OUT}`), nome); if (!f) throw new Error("File non trovato: " + nome);
@@ -606,7 +657,7 @@ const nomeIncarico = cod => incarico(cod)?.denominazione || cod;
 const inRitardo = s => !CHIUSI.includes(s.stato) && giorni(s.data) < 0;
 
 async function ricarica(){ stato.dati = await archivio.carica(); disegna(); }
-function vai(vista, arg = null){ stato.vista = vista; stato.arg = arg; disegna(); window.scrollTo(0, 0); $("#app").focus({preventScroll: true}); }
+function vai(vista, arg = null){ stato.entra = stato.vista !== vista || stato.arg !== arg; stato.vista = vista; stato.arg = arg; disegna(); window.scrollTo(0, 0); $("#app").focus({preventScroll: true}); }
 
 function chip(s){ const k = STATI[s.stato] || STATI["da fare"];
   let h = `<span class="chip ${k.classe}">${esc(s.stato)}</span>`;
@@ -649,14 +700,21 @@ function vistaAccesso(){
 async function accedi(){
   const errore = $("#errAccesso"); errore.textContent = "";
   if (!window.google?.accounts?.oauth2) return errore.textContent = "Il servizio di accesso di Google non è stato caricato: ricarica la pagina o disattiva i blocchi del browser per questo indirizzo.";
-  try { const a = ArchivioDrive(CONFIG); await a.accedi(); archivio = a; $("#btnGate").textContent = "Esci"; stato.assistente = await a.leggiAssistente(); await ricarica(); }
-  catch (e) { archivio = null; disegna(); $("#errAccesso").textContent = e.message || String(e); }
+  const btn = $("#btnAccedi"); btn.setAttribute("aria-busy", "true"); btn.textContent = "Accesso in corso…";
+  try { const a = ArchivioDrive(CONFIG); await a.accedi(); archivio = a; $("#btnGate").textContent = "Esci";
+    stato.dati = null; disegna();                                   // subito la schermata di caricamento, al posto del riquadro di accesso fermo
+    [stato.assistente, stato.motore] = await Promise.all([a.leggiAssistente(), a.leggiMotore()]);
+    const metti = a.avvia.bind(a); a.avvia = async percorso => { await metti(percorso); richiediLancio(); };   // ogni avvio chiama anche il motore
+    const chiedi = a.generaRichiesta.bind(a); a.generaRichiesta = async percorso => { await chiedi(percorso); richiediLancio(); };
+    stato.entra = true; await ricarica(); }
+  catch (e) { archivio = null; stato.dati = null; disegna(); $("#errAccesso").textContent = e.message || String(e); }
 }
 function disegna(){
   document.querySelector("nav.tabs").hidden = !archivio;
   if (!archivio){ $("#modo").textContent = "Accesso richiesto"; $("#btnGate").hidden = true; $("#app").innerHTML = vistaAccesso(); $("#btnAccedi").onclick = accedi; return; }
   $("#btnGate").hidden = false;
-  if (!stato.dati){ $("#app").innerHTML = `<p class="muted">Carico i dati…</p>`; return; }
+  if (!stato.dati){ $("#modo").textContent = archivio.esempio ? "Dati di esempio" : "Collegamento a Google Drive…"; $("#app").innerHTML = caricamento("Carico incarichi e scadenze da Google Drive…"); return; }
+  if (stato.vista !== "attivita"){ vistaAttivita.mostrata = null; $("#app").classList.remove("aggiorna"); }
   document.querySelectorAll("nav.tabs button").forEach(b => {
     const attiva = b.dataset.nav === stato.vista || (b.dataset.nav === "incarichi" && ["incarico","attivita"].includes(stato.vista));
     attiva ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current"); });
@@ -664,7 +722,8 @@ function disegna(){
   const banner = archivio.esempio ? `<div class="banner">Stai vedendo <strong>dati di esempio</strong>: puoi provare tutte le funzioni, ma nulla viene salvato e ricaricando la pagina si torna all'inizio.</div>` : "";
   const viste = {scadenze: vistaScadenze, incarichi: vistaIncarichi, incarico: vistaIncarico, attivita: vistaAttivita, assistente: vistaAssistente};
   const esito = viste[stato.vista]();
-  if (typeof esito === "string") $("#app").innerHTML = banner + esito;
+  if (typeof esito === "string"){ $("#app").innerHTML = banner + esito; if (stato.entra) ingresso(); }
+  stato.entra = false;
   if (stato.vista === "assistente") legaChat();
   if (stato.vista === "incarico") legaDocumenti();
 }
@@ -757,6 +816,8 @@ function vistaIncarico(){
   <div class="card pad"><dl class="kv">
     <dt>Tipologia</dt><dd>${esc(TIPI[i.tipo]?.nome || i.tipo)}</dd>
     <dt>Ruolo</dt><dd>${esc(i.ruolo) || `<span class="missing">da completare</span>`}</dd>
+    <dt>Nomina e durata</dt><dd>${esc(i.nomina) || `<span class="missing">da completare: gli agenti non conoscono atto e decorrenza della nomina</span>`}</dd>
+    <dt>Firma delle bozze</dt><dd>${esc(stato.dati.registro.revisore) || `<span class="missing">da completare: le bozze escono con [nome e cognome]</span>`}</dd>
     <dt>Esercizio e chiusura</dt><dd>${esc(i.esercizio)}, chiusura al ${esc(i.chiusura.split("-").reverse().join("/"))}</dd>
     <dt>Assemblea</dt><dd>${i.assemblea ? dataIt(i.assemblea) : `<span class="muted">non indicata: chiusura più 120 giorni</span>`}</dd>
     <dt>Significatività</dt><dd>${esc(i.significativita) || `<span class="muted">non indicata: la propone la catena</span>`}</dd>
@@ -780,7 +841,7 @@ function vistaIncarico(){
         <option value="${DOPO}">Da smistare: decido dopo</option></select>
       <button class="btn primary" id="docCarica">Scegli i file</button></div>
     <div class="small muted" style="margin-top:8px">Puoi anche trascinare i file in questo riquadro. Senza una destinazione ${!archivio.esempio && stato.assistente?.chiave ? "l'assistente legge i documenti e propone dove metterli" : "ti propongo io dove metterli"}: nulla viene archiviato prima della tua conferma.</div></div>
-  <div id="attesaInc"></div><div id="permInc"></div><div id="propInc"></div>
+  <div id="attesaInc">${attesaRiga("Leggo da Drive i documenti da smistare, il fascicolo permanente e le proposte…")}</div><div id="permInc"></div><div id="propInc"></div>
   <h2>Richieste ricorrenti</h2>${listaModificabile(i, "richieste_ricorrenti", "Nessuna richiesta ricorrente.", "Nuova richiesta ricorrente")}
   <h2>Rischi e temi noti</h2>${listaModificabile(i, "temi_noti", "Nessun rischio o tema indicato.", "Nuovo rischio o tema da tenere presente")}
   <div class="small muted" style="margin-top:8px">Ogni modifica vale da subito per le richieste e le catene successive di questo incarico. Le attività già lavorate vengono segnate «da rivedere».</div>
@@ -981,7 +1042,7 @@ async function classifica(cod, files, aperte, avanzamento = () => {}){
       nuove_attivita_gia_proposte: nuove.map(x => ({titolo: x.titolo, tipo: x.guida, descrizione: x.descrizione}))})}];
     indici.forEach((n, k) => { contenuto.push({type: "text", text: `[Documento ${k + 1}: ${files[n] ? files[n].name : "non leggibile"}]`}); contenuto.push(...(soloNomi ? SOLO_NOME : pronti[n].blocchi)); });
     contenuto.push({type: "text", text: `Assegna ora ${indici.length === 1 ? "il documento" : "tutti i " + indici.length + " documenti"} chiamando lo strumento smista, una sola volta.` + (insisti ? " Non rispondere con un testo: serve la chiamata allo strumento." : "")});
-    let r; try { r = await fetch("https://api.anthropic.com/v1/messages", {method: "POST",
+    let r; try { r = await rete("https://api.anthropic.com/v1/messages", {method: "POST",
         headers: {"content-type": "application/json", "x-api-key": stato.assistente.chiave, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true"},
         body: JSON.stringify({model: stato.assistente.modello || CONFIG.modelloAssistente || "claude-sonnet-5-5", max_tokens: 8000, system: ISTRUZIONI_SMISTA, tools: [STRUMENTO_SMISTA], messages: [{role: "user", content: contenuto}]})}); }
       catch (e) { throw Object.assign(new Error("connessione non riuscita (" + (e.message || e) + ")"), {stato: 0}); }
@@ -1099,8 +1160,11 @@ function promemoria(s){
 function vistaAttivita(){
   const s = stato.dati.scadenze.find(x => x.cartella === stato.arg); if (!s) return `<p>Attività non trovata.</p>`;
   const k = STATI[s.stato] || STATI["da fare"];
-  $("#app").innerHTML = `<p class="muted">Leggo la cartella…</p>`;
-  Promise.all([archivio.attivita(s.cartella), s.stato === "catena eseguita" ? archivio.proposte(s.cartella) : []]).then(([c, proposte]) => {
+  const nuova = vistaAttivita.mostrata !== s.cartella;            // prima apertura: schermata di carico; aggiornamento: resta il contenuto, attenuato
+  if (nuova) $("#app").innerHTML = caricamento("Leggo la cartella dell'attività su Drive…"); else $("#app").classList.add("aggiorna");
+  Promise.all([archivio.attivita(s.cartella), s.stato === "catena eseguita" ? archivio.proposte(s.cartella) : []]).catch(e => {
+    if (stato.vista === "attivita" && stato.arg === s.cartella){ $("#app").classList.remove("aggiorna"); $("#app").innerHTML = `<p class="err">Non riesco a leggere la cartella. ${esc(e.message || e)}</p><p><button class="btn" data-nav="incarichi">Torna agli incarichi</button></p>`; }
+    return null; }).then(esito => { if (!esito) return; const [c, proposte] = esito;
     if (stato.vista !== "attivita" || stato.arg !== s.cartella) return;
     if (s.stato === "in coda" && c.marcatore !== "AVVIA" && !archivio.esempio && !vistaAttivita.riallineo){   // etichetta rimasta indietro: l'avvio non c'è più
       vistaAttivita.riallineo = true;
@@ -1109,7 +1173,7 @@ function vistaAttivita(){
     const sezProposte = proposte.length ? `<h2>Proposte del riesame per la scheda</h2>` + (daValutare.length ? cartaProposte(daValutare, false) : "") +
       (decise ? `<div class="small muted" style="margin-top:8px">Già valutate: ${proposte.filter(p => p.stato === "accolta").length} accolte, ${proposte.filter(p => p.stato === "scartata").length} scartate.</div>` : "") : "";
     const r = s.richiesta, inCorso = c.marcatore === "AVVIA", inPrep = c.marcatore === "RICHIEDI", chiusa = CHIUSI.includes(s.stato), ndoc = c.documenti.length;
-    const preparazione = inPrep ? `<div class="item"><div class="grow"><strong>Richiesta in preparazione</strong>: arriva per mail entro mezz'ora.</div><span class="chip s-warn">in arrivo</span></div>` : "";
+    const preparazione = inPrep ? `<div class="item"><div class="grow"><strong>Richiesta in preparazione</strong>: arriva per mail ${tempoMotore()}.</div><span class="chip s-warn">in arrivo</span></div>` : "";
     const rivedi = s.daAggiornare ? `<div class="card pad" style="border-left:4px solid var(--gold);margin-bottom:14px"><strong>Da rivedere</strong>
       <div class="small muted" style="margin:4px 0 10px">Richieste ricorrenti o rischi dell'incarico sono cambiati dopo questo lavoro.</div>
       <div class="actions" style="justify-content:flex-start">${s.stato === "catena eseguita" ? `<button class="btn primary" id="btnRiesegui">Riesegui con le nuove informazioni</button>`
@@ -1126,10 +1190,10 @@ function vistaAttivita(){
     <div class="head"><h1>${esc(s.attivita)}</h1></div>${rivedi}
     <div class="card pad"><dl class="kv">
       <dt>Scadenza</dt><dd><strong>${dataIt(s.data)}</strong> <span class="muted">(${distanza(giorni(s.data))})</span>${chiusa ? "" : ` <button class="btn link" id="btnData" style="margin-left:8px">Cambia data</button>`}</dd>
-      <dt>Stato</dt><dd>${chip({...s, ndoc})} <span class="small muted">${esc(s.stato === "richiesta pronta" ? (ndoc ? "Documenti arrivati: puoi avviare la catena" : r?.inviata ? "In attesa dei documenti dal cliente" : "Rileggi la bozza e inviala al cliente") : k.nota)}</span></dd>
+      <dt>Stato</dt><dd>${chip({...s, ndoc})} <span class="small muted">${esc(s.stato === "richiesta pronta" ? (ndoc ? "Documenti arrivati: puoi avviare la catena" : r?.inviata ? "In attesa dei documenti dal cliente" : "Rileggi la bozza e inviala al cliente") : s.stato === "in coda" ? notaCoda() : k.nota)}</span></dd>
       <dt>Cartella su Drive</dt><dd class="small muted">${esc(s.cartella)}</dd></dl></div>
     <div class="actions" style="justify-content:flex-start;margin-top:10px">${s.stato === "svolta" ? `<button class="btn" id="btnRiapri">Riapri l'attività</button>`
-      : (inCorso || s.stato === "in coda" ? `<button class="btn" id="btnAnnullaAvvio">Annulla l'avvio</button>` : "") + (s.stato === "catena eseguita" ? "" : `<button class="btn" id="btnSvolta">Segna come già svolta</button>`)}</div>
+      : (inCorso || s.stato === "in coda" ? `<button class="btn" id="btnAnnullaAvvio">Annulla l'avvio</button>` + (motoreCollegato() ? `<button class="btn" id="btnLancia">Fai partire ora il motore</button>` : "") : "") + (s.stato === "catena eseguita" ? "" : `<button class="btn" id="btnSvolta">Segna come già svolta</button>`)}</div>
     ${sezProposte}${s.stato === "svolta" ? "" : sezRichiesta}
     <h2>Documenti ricevuti</h2>
     <div class="card rows">${ndoc ? c.documenti.map(d => `<div class="item"><div class="grow">${esc(d.nome)}</div><span class="small muted">${esc(d.dim)}</span></div>`).join("")
@@ -1137,14 +1201,18 @@ function vistaAttivita(){
       <div class="item"><input type="file" id="fileIn" multiple hidden>
         <button class="btn" id="btnCarica">Carica documenti</button>
         <button class="btn primary" id="btnAvvia" ${!ndoc || inCorso || s.stato === "svolta" ? "disabled" : ""}>${inCorso ? "Catena in coda" : "Avvia la catena"}</button>
-        <span class="small muted grow">${s.stato === "svolta" ? "Attività già svolta: i documenti restano in archivio. Per far lavorare gli agenti, riaprila." : inCorso ? "Parte entro mezz'ora, dal lunedì al sabato tra le 6 e le 21." : ndoc ? "I cinque passaggi partono entro mezz'ora." : "Carica almeno un documento per poter avviare."}</span></div></div>
+        <span class="small muted grow">${s.stato === "svolta" ? "Attività già svolta: i documenti restano in archivio. Per far lavorare gli agenti, riaprila." : inCorso ? notaCoda() : ndoc ? (motoreCollegato() ? "I cinque passaggi partono subito." : "I cinque passaggi partono al primo giro programmato.") : "Carica almeno un documento per poter avviare."}</span></div>
+      ${archivio.esempio ? "" : `<div class="item small muted"><span class="grow">${motoreCollegato() ? "Avvio immediato collegato: mettendo in coda una catena la pagina fa partire subito il motore." : "Avvio immediato non collegato: la catena aspetta il giro programmato, dal lunedì al sabato ogni mezz'ora tra le 6 e le 21."}</span><button class="btn" id="btnMotore">${motoreCollegato() ? "Gestisci" : "Collega l'avvio immediato"}</button></div>`}</div>
 
     <h2>Risultati</h2>
     <div class="card rows">${c.output.length ? c.output.map(n => `<div class="item"><div class="grow">${n.startsWith("05_") ? "<strong>" + esc(n) + "</strong> <span class=\"chip s-ok\">da qui</span>" : esc(n)}</div>
         ${n.endsWith(".md") ? `<button class="btn" data-leggi="${esc(n)}">Leggi</button>` : ""}<button class="btn" data-scarica="${esc(n)}">Scarica</button></div>`).join("")
       : `<div class="pad muted">Nessun risultato: compaiono qui quando la richiesta o la catena sono pronte.</div>`}</div>`;
+    $("#app").classList.remove("aggiorna"); vistaAttivita.mostrata = s.cartella; if (nuova) ingresso();
     const poi = async messaggio => { stato.dati = await archivio.carica(); if (messaggio) toast(messaggio); disegna(); };
-    const su = (id, azione) => { const el = $(id); if (el) el.onclick = azione; };
+    const su = (id, azione) => { const el = $(id); if (el) el.onclick = () => conPulsante(el, azione); };
+    su("#btnMotore", () => apriMotore());
+    su("#btnLancia", async () => { const esito = await lanciaMotore(); toast(messaggioLancio(esito)); });
     su("#btnCarica", () => $("#fileIn").click());
     $("#fileIn").onchange = async e => { if (!e.target.files.length) return; await archivio.caricaDocumenti(s.cartella, [...e.target.files]); poi("Documenti caricati nella cartella."); };
     su("#btnAvvia", async () => { await archivio.avvia(s.cartella); poi("Catena in coda: riceverai una mail a lavoro concluso."); });
@@ -1152,11 +1220,11 @@ function vistaAttivita(){
       await archivio.segna(s.cartella, "svolta"); poi("Attività chiusa come già svolta: nessun lavoro per gli agenti."); });
     su("#btnAnnullaAvvio", async () => { await archivio.segna(s.cartella, "annulla"); poi("Avvio annullato: la catena non partirà."); });
     su("#btnRiapri", async () => { await archivio.segna(s.cartella, "riapri"); poi("Attività riaperta."); });
-    su("#btnGenera", async () => { await archivio.generaRichiesta(s.cartella); poi(archivio.esempio ? "Richiesta generata in anticipo: il sistema non la rifarà alla data prevista." : "Richiesta in preparazione: arriva per mail entro mezz'ora."); });
+    su("#btnGenera", async () => { await archivio.generaRichiesta(s.cartella); poi(archivio.esempio ? "Richiesta generata in anticipo: il sistema non la rifarà alla data prevista." : `Richiesta in preparazione: arriva per mail ${tempoMotore()}.`); });
     su("#btnInviata", async () => { await archivio.aggiornaScadenza(s.cartella, {richiesta: {inviata: iso(oggi())}}); poi("Segnata come inviata oggi."); });
     su("#btnNonInviata", async () => { await archivio.aggiornaScadenza(s.cartella, {richiesta: {inviata: null}}); poi("Riportata a «non inviata»."); });
     su("#btnRiesegui", async () => { await archivio.avvia(s.cartella); poi("Catena in coda con le nuove informazioni."); });
-    su("#btnRigenera", async () => { await archivio.generaRichiesta(s.cartella); poi(archivio.esempio ? "Richiesta preparata con le nuove informazioni." : "Nuova richiesta in preparazione: arriva per mail entro mezz'ora."); });
+    su("#btnRigenera", async () => { await archivio.generaRichiesta(s.cartella); poi(archivio.esempio ? "Richiesta preparata con le nuove informazioni." : `Nuova richiesta in preparazione: arriva per mail ${tempoMotore()}.`); });
     su("#btnVaBene", async () => { await archivio.aggiornaScadenza(s.cartella, {daAggiornare: false}); poi("Confermato: nessun aggiornamento."); });
     su("#btnData", () => { apri(`<form class="dlg" id="fData"><h2>Cambia la scadenza</h2><div class="small muted">${esc(s.attivita)}</div>
         <label>Nuova data<input type="date" name="data" value="${esc(s.data)}"></label>
@@ -1166,6 +1234,55 @@ function vistaAttivita(){
     $("#app").querySelectorAll("[data-leggi]").forEach(b => b.onclick = async () => apriLettura(b.dataset.leggi, await archivio.leggi(s.cartella, b.dataset.leggi), s.cartella));
     $("#app").querySelectorAll("[data-scarica]").forEach(b => b.onclick = () => archivio.scarica(s.cartella, b.dataset.scarica));
   });
+}
+
+/* ---------- avvio immediato del motore ----------
+   La credenziale di GitHub sta su Drive (01_Registro/motore.json), mai in questa pagina.
+   Se manca o GitHub non risponde, la catena resta in coda e parte al giro programmato. */
+const motoreCollegato = () => !archivio.esempio && !!(stato.motore?.token && stato.motore?.repo);
+const notaCoda = () => motoreCollegato() ? "Catena in coda: il motore è stato chiamato e parte a breve; a lavoro concluso arriva la mail."
+  : "Catena in coda: parte al primo giro programmato, dal lunedì al sabato ogni mezz'ora tra le 6 e le 21.";
+const tempoMotore = () => motoreCollegato() ? "tra pochi minuti" : "entro mezz'ora, dal lunedì al sabato";
+const indirizzoMotore = m => `https://api.github.com/repos/${m.repo}/actions/workflows/${m.flusso || "catena.yml"}`;
+const testateMotore = m => ({Authorization: "Bearer " + m.token, Accept: "application/vnd.github+json"});
+async function lanciaMotore(){
+  if (!motoreCollegato()) return {esito: "programmato"};
+  const m = stato.motore;
+  try { const r = await rete(indirizzoMotore(m) + "/dispatches", {method: "POST", headers: {...testateMotore(m), "Content-Type": "application/json"}, body: JSON.stringify({ref: m.ramo || "main"})});
+    return r.ok ? {esito: "partito"} : {esito: "errore", codice: r.status}; }
+  catch (e) { return {esito: "errore", codice: 0}; }
+}
+const messaggioLancio = r => r.esito === "partito" ? "Motore avviato: la catena parte tra pochi secondi."
+  : r.esito === "programmato" ? "Avvio immediato non collegato: la catena parte al giro programmato."
+  : `Avvio immediato non riuscito (${r.codice === 401 ? "credenziale non valida o scaduta" : r.codice ? "GitHub ha risposto " + r.codice : "rete non raggiungibile"}): la catena resta in coda e parte al giro programmato.`;
+function richiediLancio(){ if (!motoreCollegato()) return; clearTimeout(richiediLancio.t);          // più avvii ravvicinati: una sola chiamata
+  richiediLancio.t = setTimeout(async () => toast(messaggioLancio(await lanciaMotore())), 1200); }
+function apriMotore(){
+  const m = stato.motore || {};
+  apri(`<form class="dlg" id="fMotore" novalidate><h2>Avvio immediato del motore</h2>
+    <div class="small muted">Con una credenziale di GitHub la pagina fa partire il motore appena metti in coda una catena. La credenziale viene salvata nel tuo Drive, in 01_Registro, e non compare in questa pagina né nel suo archivio pubblico.</div>
+    <ol class="small" style="padding-left:18px;margin:12px 0">
+      <li>Su GitHub apri Settings, Developer settings, Personal access tokens, Fine-grained tokens e scegli «Generate new token».</li>
+      <li>In «Repository access» scegli «Only select repositories» e seleziona solo l'archivio del motore.</li>
+      <li>In «Permissions», «Repository permissions», imposta <strong>Actions</strong> su «Read and write». Nessun altro permesso.</li>
+      <li>Genera la credenziale e incollala qui sotto.</li></ol>
+    <div class="fields">
+      <label class="wide">Archivio del motore (utente/archivio)<input type="text" name="repo" autocomplete="off" placeholder="utente/archivio" value="${esc(m.repo || "")}"></label>
+      <label class="wide">Credenziale di GitHub<input type="password" name="token" autocomplete="off" placeholder="${m.token ? "già salvata: lascia vuoto per tenerla" : "github_pat_…"}"></label>
+    </div>
+    <div class="err" id="errMotore" role="alert"></div>
+    <div class="actions">${m.token ? `<button type="button" class="btn" id="btnScollega">Scollega</button>` : ""}<button type="button" class="btn" data-chiudi>Annulla</button><button class="btn primary">Verifica e salva</button></div></form>`);
+  const scollega = $("#btnScollega"); if (scollega) scollega.onclick = async () => { stato.motore = null; await archivio.salvaMotore({}); dlg.close(); toast("Avvio immediato scollegato: la credenziale è stata tolta da Drive."); disegna(); };
+  $("#fMotore").onsubmit = async e => {
+    e.preventDefault(); const f = new FormData(e.target), repo = f.get("repo").trim().replace(/^https:\/\/github\.com\//, "").replace(/\.git$|\/$/g, ""), token = f.get("token").trim() || m.token || "";
+    const errore = t => { $("#errMotore").textContent = t; };
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return errore("Scrivi l'archivio come utente/archivio.");
+    if (!token) return errore("Incolla la credenziale generata su GitHub.");
+    let r; try { r = await rete(indirizzoMotore({repo}), {headers: testateMotore({token})}); } catch (x) { return errore("GitHub non è raggiungibile: riprova tra poco."); }
+    if (!r.ok) return errore(r.status === 401 ? "GitHub non riconosce la credenziale: controlla di averla copiata per intero e che non sia scaduta."
+      : "La credenziale non vede il motore in questo archivio (GitHub ha risposto " + r.status + "): controlla il nome dell'archivio, che sia tra quelli selezionati e che il permesso Actions sia attivo.");
+    stato.motore = {repo, token}; await archivio.salvaMotore(stato.motore); dlg.close(); toast("Avvio immediato collegato."); disegna();
+  };
 }
 
 /* ---------- assistente ----------
@@ -1330,7 +1447,7 @@ async function cervelloClaude(testo, files){
   const messaggi = []; for (const m of storia){ const u = messaggi[messaggi.length - 1]; u && u.role === m.role ? u.content += "\n\n" + m.content : messaggi.push(m); }
   if (messaggi.length && messaggi[messaggi.length - 1].role === "user") messaggi.pop();
   messaggi.push({role: "user", content: [...await blocchiAllegati(files), {type: "text", text: testo || "(Solo allegati: proponi dove archiviarli.)"}]});
-  const r = await fetch("https://api.anthropic.com/v1/messages", {method: "POST",
+  const r = await rete("https://api.anthropic.com/v1/messages", {method: "POST",
     headers: {"content-type": "application/json", "x-api-key": stato.assistente.chiave, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true"},
     body: JSON.stringify({model: stato.assistente.modello || CONFIG.modelloAssistente || "claude-sonnet-5-5", max_tokens: 2500, system: ISTRUZIONI + "\n\nDati aggiornati della pagina:\n" + contestoPerModello(), tools: STRUMENTI, messages: messaggi})});
   if (!r.ok){ const e = await r.json().catch(() => ({})); throw new Error(r.status === 401 ? "La chiave dell'assistente non è valida o è stata revocata." : (e.error?.message || "Il modello ha risposto " + r.status)); }
@@ -1400,7 +1517,7 @@ async function esitoProposta(i, conferma){
 }
 
 /* ---------- finestre ---------- */
-const dlg = $("#dlg");
+const dlg = $("#dlg"); legaAttesaRiquadri();
 function chiedi(testo, etichetta = "Conferma"){ return new Promise(fine => {
   apri(`<div class="dlg"><h2>Conferma</h2><p style="margin:0">${esc(testo)}</p><div class="actions"><button class="btn" id="chNo">Annulla</button><button class="btn primary" id="chSi">${esc(etichetta)}</button></div></div>`);
   let esito = false; $("#chSi").onclick = () => { esito = true; dlg.close(); }; $("#chNo").onclick = () => dlg.close();
@@ -1428,12 +1545,14 @@ function codiceDa(tipo, denominazione){
 function righeDa(testo){ return testo.split("\n").map(x => x.trim()).filter(Boolean); }
 
 function apriIncarico(cod){
-  const nuovo = !cod; const i = nuovo ? {codice:"", denominazione:"", tipo:"revisione_legale", ruolo:"", esercizio: oggi().getFullYear(), chiusura:"12-31", assemblea:"", significativita:"", referenti:[], richieste_ricorrenti:[], temi_noti:[], date:{}, note:""} : incarico(cod);
+  const nuovo = !cod; const i = nuovo ? {codice:"", denominazione:"", tipo:"revisione_legale", ruolo:"", esercizio: oggi().getFullYear(), chiusura:"12-31", assemblea:"", significativita:"", referenti:[], richieste_ricorrenti:[], temi_noti:[], date:{}, note:"", nomina:""} : incarico(cod);
   apri(`<form class="dlg" id="fInc2" novalidate><h2>${nuovo ? "Nuovo incarico" : "Modifica anagrafica"}</h2>
     <div class="fields">
       <label class="wide">Denominazione<input type="text" name="denominazione" required value="${esc(i.denominazione)}"></label>
       <label>Tipologia<select name="tipo" ${nuovo ? "" : "disabled"}>${Object.entries(TIPI).map(([k, v]) => `<option value="${k}" ${i.tipo === k ? "selected" : ""}>${v.nome}</option>`).join("")}</select></label>
       <label>Ruolo del revisore<input type="text" name="ruolo" value="${esc(i.ruolo)}"></label>
+      <label class="wide">Nomina e durata dell'incarico<input type="text" name="nomina" placeholder="per esempio: delibera C.C. n. 30 del 10/11/2026, triennio 2026-2029" value="${esc(i.nomina || "")}"></label>
+      <label class="wide">Revisore incaricato: firma delle bozze (vale per tutti gli incarichi)<input type="text" name="revisore" placeholder="per esempio: Dott. Nome Cognome" value="${esc(stato.dati.registro.revisore || "")}"></label>
       <label>Primo esercizio gestito<input type="number" name="esercizio" min="2020" max="2100" value="${esc(i.esercizio)}"></label>
       <label>Chiusura dell'esercizio (mese-giorno)<input type="text" name="chiusura" pattern="\\d{2}-\\d{2}" placeholder="12-31" value="${esc(i.chiusura)}"></label>
       <label>Data dell'assemblea<input type="date" name="assemblea" value="${esc(i.assemblea)}"></label>
@@ -1453,7 +1572,8 @@ function apriIncarico(cod){
       while (reg.incarichi.some(x => x.codice === codice)) codice = `${codiceDa(tipo, den)}-${n++}`;
       voce = {...i, codice, tipo}; reg.incarichi.push(voce); }
     Object.assign(voce, {denominazione: den, ruolo: f.get("ruolo").trim(), esercizio: Number(f.get("esercizio")) || i.esercizio, chiusura: ch,
-      assemblea: f.get("assemblea"), significativita: f.get("significativita").trim(), note: f.get("note").trim()});
+      assemblea: f.get("assemblea"), significativita: f.get("significativita").trim(), note: f.get("note").trim(), nomina: f.get("nomina").trim()});
+    reg.revisore = f.get("revisore").trim();
     await archivio.salvaRegistro(reg); dlg.close(); toast(nuovo ? "Incarico creato: i fascicoli nascono al prossimo aggiornamento del mattino." : "Anagrafica salvata."); vai("incarico", voce.codice);
   };
 }
